@@ -245,6 +245,14 @@ const CHANGELOGS = {
       { type: 'fix', text: '修复部分错误' },
       { type: 'improve', text: '优化用户体验' }
     ]
+  },
+  '2.0.13': {
+    title: 'v2.0.13',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复部分错误' },
+      { type: 'improve', text: '优化用户体验' }
+    ]
   }
 };
 
