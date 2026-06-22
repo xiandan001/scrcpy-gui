@@ -2270,14 +2270,24 @@ const https = require('https');
 const { StringDecoder } = require('string_decoder');
 
 const AGNES_API_URL = 'https://apihub.agnes-ai.com/v1/chat/completions';
-// 多 API Key 轮询：初始化时随机选取一个，分散请求压力
-const AGNES_API_KEYS = [
-  'sk-FaRBlMD01OmcaVOZChWfWJsTEG9uG0itiUpzEnUbU0A7iE2M',
-  'sk-S2yQQbF58jT3b4TZRdvORDNm4yNGuOmkrINquE9oY1f6RGel',
-  'sk-qgpwa3mVuDmQNNUb3OhCeevz8Rx72YkenFKZath4GAxaErX0',
-  'sk-Su4iBKne9CAxY98ERf3bEswozIk1HqGwfvW2ECUpH1dDPwC1',
-  'sk-4yJmbRHU6grWCtiHxSl8RzuoEk2ik3luvnAPV3JaoB9FAHd1'
-];
+// 多 API Key 轮询：从本地私有文件 electron/api-keys.js 读取，避免 Key 进入 Git 仓库。
+// 该文件已加入 .gitignore，但会被 electron-builder 打包进应用，因此发布版本仍可正常使用。
+// 若文件缺失，则尝试从环境变量 AGNES_API_KEYS（逗号分隔）读取。
+let AGNES_API_KEYS = [];
+try {
+  const localKeys = require('./api-keys.js');
+  if (Array.isArray(localKeys?.AGNES_API_KEYS) && localKeys.AGNES_API_KEYS.length > 0) {
+    AGNES_API_KEYS = localKeys.AGNES_API_KEYS;
+  }
+} catch (e) {
+  console.warn('[AI] 未找到 electron/api-keys.js，将尝试从环境变量读取 API Keys');
+}
+if (AGNES_API_KEYS.length === 0 && process.env.AGNES_API_KEYS) {
+  AGNES_API_KEYS = process.env.AGNES_API_KEYS.split(',').map(k => k.trim()).filter(Boolean);
+}
+if (AGNES_API_KEYS.length === 0) {
+  console.error('[AI] 未配置 Agnes API Keys，AI 日志分析功能将不可用。请创建 electron/api-keys.js 或设置 AGNES_API_KEYS 环境变量。');
+}
 let agnesKeyIndex = Math.floor(Math.random() * AGNES_API_KEYS.length);
 const AGNES_API_KEY = AGNES_API_KEYS[agnesKeyIndex];
 // 获取下一个 API Key（轮询）

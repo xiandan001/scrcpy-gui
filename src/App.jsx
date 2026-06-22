@@ -234,8 +234,16 @@ const CHANGELOGS = {
     title: 'v2.0.11',
     date: '2026-06-22',
     items: [
-      { type: 'fix', text: '修复 v2.0.10 渲染进程修复代码未进入安装包的问题（重新构建 dist 并打包）' },
-      { type: 'improve', text: '优化 README 文档，补充功能截图和使用说明' }
+      { type: 'fix', text: '修复部分错误' },
+      { type: 'improve', text: '优化用户体验' }
+    ]
+  },
+  '2.0.12': {
+    title: 'v2.0.12',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复部分错误' },
+      { type: 'improve', text: '优化用户体验' }
     ]
   }
 };
@@ -1929,18 +1937,9 @@ function App() {
 
                       {/* 发现新版本 */}
                       {updaterState.available && !updaterState.downloaded && (
-                        <div className={`px-3 py-2 rounded-lg text-xs ${t.primary === 'tech' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-700'}`}>
-                          <div className="flex items-center gap-2 mb-1">
-                            <DownloadCloud size={14} />
-                            <span className="font-semibold">发现新版本 v{updaterState.info?.version || '未知'}</span>
-                          </div>
-                          {updaterState.info?.releaseNotes && (
-                            <p className="opacity-80 mt-1 line-clamp-2">
-                              {typeof updaterState.info.releaseNotes === 'string'
-                                ? updaterState.info.releaseNotes.slice(0, 120)
-                                : '点击下载以查看更新内容'}
-                            </p>
-                          )}
+                        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${t.primary === 'tech' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-700'}`}>
+                          <DownloadCloud size={14} />
+                          <span className="font-semibold">发现新版本 v{updaterState.info?.version || '未知'}</span>
                         </div>
                       )}
 

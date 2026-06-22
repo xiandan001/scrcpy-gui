@@ -16,6 +16,9 @@ dist-ssr
 release
 .electron-cache
 
+# Private API keys (local only, packed into release builds by electron-builder)
+electron/api-keys.js
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
