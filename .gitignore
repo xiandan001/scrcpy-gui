@@ -15,6 +15,8 @@ dist-ssr
 # Build outputs
 release
 .electron-cache
+build/
+docs/
 
 # Private API keys (local only, packed into release builds by electron-builder)
 # XBH_AI_PATCH: 必须使用 .cjs 扩展名，因为 package.json 声明了 "type": "module"
