@@ -16,7 +16,14 @@ dist-ssr
 release
 .electron-cache
 build/
-docs/
+# docs 目录只忽略非图片文件，图片保留在仓库中
+docs/*
+!docs/*.png
+!docs/*.jpg
+!docs/*.jpeg
+!docs/*.gif
+!docs/*.svg
+!docs/*.webp
 
 # Private API keys (local only, packed into release builds by electron-builder)
 # XBH_AI_PATCH: 必须使用 .cjs 扩展名，因为 package.json 声明了 "type": "module"
