@@ -24,13 +24,14 @@
 ### 2. Log 分析服务
 独立的日志分析窗口，支持实时 logcat 抓取（realtime / file 两种数据源）、本地 `.log` 文件加载、多维度过滤（关键字、排除、包名、Tag、PID、级别），以及导出 / 复制等能力。双击日志行即可复制，悬停查看完整消息。
 
-![Log 分析服务](企业微信截图_1781684636727.png)
+![alt text](image-1.png)
 
 ### 3. AI 智能日志分析 + MCP 服务
 - **AI 智能分析**：基于 `agnes-2.0-flash` 模型，以流式输出方式实时返回分析结果，支持 Markdown 渲染（标题、代码块、表格、列表等）、多轮对话追问、结果导出为 `.md` 文件。
 - **MCP 服务**：开启后（默认 `http://127.0.0.1:3000/sse`），外部 AI 工具（Claude CLI、Cursor、Trae 等）可通过自然语言指令直接控制日志抓取与 AI 分析，提供 `device_list`、`capture_start`、`log_filter`、`ai_analyze` 等 11 个工具。
 
-![MCP 服务](企业微信截图_17816846815518.png)
+![alt text](image.png)
+![alt text](企业微信截图_17817763877431.png)
 
 ---
 

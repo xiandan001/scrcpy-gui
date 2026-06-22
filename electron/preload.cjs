@@ -60,6 +60,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // XBH_AI_PATCH_START
   // 版本号统一管理：渲染进程获取应用版本
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  // 渲染进程主动查询是否需要显示更新说明（拉取模式）
+  checkChangelog: () => ipcRenderer.invoke('app:checkChangelog'),
+  // XBH_AI_PATCH_END
+  // XBH_AI_PATCH_START
+  // 更新说明弹窗：main 进程检测版本升级后主动推送
+  onChangelogShow: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('changelog:show', listener);
+    return () => ipcRenderer.off('changelog:show', listener);
+  },
   // XBH_AI_PATCH_END
   // XBH_AI_PATCH_START
   // 自动更新 API

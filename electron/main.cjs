@@ -4,9 +4,20 @@ const fs = require('fs');
 const { exec, spawn } = require('child_process');
 
 // XBH_AI_PATCH_START
-// 版本号统一管理：单一来源为 package.json 的 version 字段
+// 版本号统一管理：使用 Electron 内置的 app.getVersion()
+// 该方法自动读取 package.json 的 version 字段，打包后也能正确获取
 // 修改版本号只需改 package.json 一处，其他地方自动同步
-const APP_VERSION = require('../package.json').version;
+let APP_VERSION = null;
+function getAppVersion() {
+  if (!APP_VERSION) {
+    try {
+      APP_VERSION = app.getVersion();
+    } catch (e) {
+      APP_VERSION = require('../package.json').version;
+    }
+  }
+  return APP_VERSION;
+}
 // XBH_AI_PATCH_END
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -38,8 +49,9 @@ if (!gotTheLock) {
 // 自动更新集成 - 使用 electron-updater 实现差分增量更新
 // 开发模式下不启用自动更新（electron-updater 需要签名后的应用才能工作）
 const { autoUpdater } = require('electron-updater');
-autoUpdater.autoDownload = false;  // 不自动下载，由用户点击触发
+autoUpdater.autoDownload = false;  // 不自动下载，由用户点击或自动检查逻辑触发
 autoUpdater.autoInstallOnAppQuit = true;  // 下载完成后退出应用时自动安装
+autoUpdater.logger = console;  // 启用日志，便于排查更新问题
 
 // 自动更新事件状态缓存（供渲染进程查询）
 let updaterStatus = {
@@ -197,6 +209,14 @@ function createLogAnalyzerWindow() {
 }
 
 app.whenReady().then(() => {
+  // XBH_AI_PATCH_START
+  // 检测版本升级：必须在 createWindow() 之前执行。
+  // 因为 createWindow() 会立即加载页面，渲染进程会马上调用 app:checkChangelog
+  // 查询 pendingChangelog；如果此时还没设置标志位，弹窗就会丢失。
+  cleanupPendingUpdater();
+  checkVersionAndNotifyChangelog();
+  // XBH_AI_PATCH_END
+
   createWindow();
   initMcpServer();
 
@@ -206,6 +226,53 @@ app.whenReady().then(() => {
     }
   });
 });
+
+// XBH_AI_PATCH_START
+// 清理 OTA 更新遗留的安装包
+// electron-updater 下载的安装包默认存放在 userData/pending 目录
+// 安装完成后该文件不会被自动删除，需手动清理以释放磁盘空间
+function cleanupPendingUpdater() {
+  try {
+    const userDataPath = app.getPath('userData');
+    const pendingDir = path.join(userDataPath, 'pending');
+    if (fs.existsSync(pendingDir)) {
+      const files = fs.readdirSync(pendingDir);
+      for (const file of files) {
+        const filePath = path.join(pendingDir, file);
+        fs.unlinkSync(filePath);
+        console.log(`[Updater] 已清理遗留安装包: ${file}`);
+      }
+    }
+  } catch (err) {
+    console.warn('[Updater] 清理安装包失败:', err.message);
+  }
+}
+
+// 检测版本升级并设置标志（渲染进程通过 IPC 主动查询）
+// 在 userData 目录中存储 last-version.txt，对比当前版本判断是否需要显示更新说明
+let pendingChangelog = { needsShow: false, version: null };
+function checkVersionAndNotifyChangelog() {
+  try {
+    const currentVersion = getAppVersion();
+    const userDataPath = app.getPath('userData');
+    const versionFile = path.join(userDataPath, 'last-version.txt');
+    let lastVersion = null;
+    if (fs.existsSync(versionFile)) {
+      lastVersion = fs.readFileSync(versionFile, 'utf-8').trim();
+    }
+    console.log(`[Version] 当前版本: ${currentVersion}, 上次版本: ${lastVersion}`);
+    if (lastVersion !== currentVersion) {
+      // 版本不同（含首次安装），设置标志，等待渲染进程查询
+      pendingChangelog = { needsShow: true, version: currentVersion };
+      console.log(`[Version] 已标记需要显示 v${currentVersion} 更新说明`);
+    }
+    // 更新存储的版本号
+    fs.writeFileSync(versionFile, currentVersion, 'utf-8');
+  } catch (err) {
+    console.warn('[Version] 版本检测失败:', err.message);
+  }
+}
+// XBH_AI_PATCH_END
 
 // XBH_AI_PATCH_START
 // 应用退出时自动停止所有录屏进程
@@ -900,40 +967,66 @@ ipcMain.handle('app:getDocumentsPath', async () => {
 // XBH_AI_PATCH_START
 // 版本号统一管理：渲染进程通过此 IPC 获取应用版本
 ipcMain.handle('app:getVersion', async () => {
-  return APP_VERSION;
+  return getAppVersion();
+});
+// 渲染进程主动查询是否需要显示更新说明（拉取模式，避免事件丢失）
+ipcMain.handle('app:checkChangelog', async () => {
+  const result = { ...pendingChangelog };
+  // 查询后清除标志，避免重复显示
+  pendingChangelog = { needsShow: false, version: null };
+  return result;
 });
 // XBH_AI_PATCH_END
 
 // XBH_AI_PATCH_START
 // 自动更新 IPC handlers
-// 检测更新服务器是否已配置（避免占位符 URL 导致 DNS 解析失败）
-function getUpdateServerUrl() {
-  try {
-    const builderConfig = require('../electron-builder.json');
-    return builderConfig.publish && builderConfig.publish.url;
-  } catch {
-    return null;
-  }
-}
-
-const UPDATE_SERVER_URL = getUpdateServerUrl();
-const UPDATE_NOT_CONFIGURED = !UPDATE_SERVER_URL || UPDATE_SERVER_URL.includes('your-update-server.com');
+// electron-updater 打包后会自动读取 resources/app-update.yml 中的 publish 配置
+// 无需手动检测 electron-builder.json（该文件打包后不存在于 asar 中）
 
 // 检查更新（手动触发）
+// 直接使用 checkForUpdates() 返回值判断，不依赖事件监听器
+// 事件仍会触发并通过 sendUpdaterEvent 转发，用于 UI 状态同步
 ipcMain.handle('updater:check', async () => {
   if (isDev) {
     return { success: false, error: '开发模式不支持自动更新，请打包后使用' };
   }
-  if (UPDATE_NOT_CONFIGURED) {
-    return { success: false, error: '更新服务器未配置，请联系管理员配置 electron-builder.json 中的 publish.url' };
-  }
   try {
-    await autoUpdater.checkForUpdates();
-    return { success: true };
+    console.log('[Updater] 开始检查更新...');
+    const result = await autoUpdater.checkForUpdates();
+    console.log('[Updater] checkForUpdates 返回:', result ? `有更新 v${result.updateInfo?.version}` : '无更新');
+    if (result && result.updateInfo) {
+      // 比较版本号：如果服务器版本高于当前版本，则有更新
+      const currentVersion = getAppVersion();
+      const serverVersion = result.updateInfo.version;
+      const hasUpdate = compareVersions(serverVersion, currentVersion) > 0;
+      console.log(`[Updater] 当前: ${currentVersion}, 服务器: ${serverVersion}, 有更新: ${hasUpdate}`);
+      return {
+        success: true,
+        available: hasUpdate,
+        notAvailable: !hasUpdate,
+        info: result.updateInfo
+      };
+    }
+    // result 为 null，表示没有更新
+    return { success: true, available: false, notAvailable: true, info: null };
   } catch (err) {
-    return { success: false, error: err.message };
+    console.error('[Updater] 检查更新失败:', err);
+    return { success: false, error: err.message || String(err) };
   }
 });
+
+// 简单的语义化版本比较：v1 > v2 返回 1，v1 < v2 返回 -1，相等返回 0
+function compareVersions(v1, v2) {
+  const parts1 = v1.split('.').map(n => parseInt(n, 10) || 0);
+  const parts2 = v2.split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+    const a = parts1[i] || 0;
+    const b = parts2[i] || 0;
+    if (a > b) return 1;
+    if (a < b) return -1;
+  }
+  return 0;
+}
 
 // 下载更新
 ipcMain.handle('updater:download', async () => {
@@ -941,11 +1034,14 @@ ipcMain.handle('updater:download', async () => {
     return { success: false, error: '开发模式不支持自动更新' };
   }
   try {
+    console.log('[Updater] 开始下载更新...');
     updaterStatus.downloading = true;
     updaterStatus.downloaded = false;
     await autoUpdater.downloadUpdate();
+    console.log('[Updater] 下载完成');
     return { success: true };
   } catch (err) {
+    console.error('[Updater] 下载失败:', err);
     updaterStatus.downloading = false;
     return { success: false, error: err.message };
   }
@@ -962,7 +1058,7 @@ ipcMain.handle('updater:install', async () => {
 
 // 获取当前更新状态
 ipcMain.handle('updater:status', async () => {
-  return { ...updaterStatus, currentVersion: APP_VERSION };
+  return { ...updaterStatus, currentVersion: getAppVersion() };
 });
 // XBH_AI_PATCH_END
 
@@ -1538,7 +1634,7 @@ const http = require('http');
 const { randomUUID } = require('crypto');
 
 const MCP_SERVER_NAME = 'Android Log Analyzer MCP';
-const MCP_SERVER_VERSION = APP_VERSION;
+const MCP_SERVER_VERSION = getAppVersion();
 const MCP_PROTOCOL_VERSION = '2025-03-26';
 let mcpPort = 49321;
 let mcpServerInstance = null;

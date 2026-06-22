@@ -148,11 +148,105 @@ const CHANGELOGS = {
       { type: 'improve', text: '版本号统一管理，修改 package.json 一处即可同步全局' },
       { type: 'fix', text: '修复自动诊断状态丢失、智能搜索事件污染等多个问题' }
     ]
+  },
+  '2.0.1': {
+    title: 'v2.0.1',
+    date: '2026-06-18',
+    items: [
+      { type: 'fix', text: '修复部分错误' }
+    ]
+  },
+  '2.0.2': {
+    title: 'v2.0.2',
+    date: '2026-06-18',
+    items: [
+      { type: 'fix', text: '修复部分错误' }
+    ]
+  },
+  '2.0.3': {
+    title: 'v2.0.3',
+    date: '2026-06-18',
+    items: [
+      { type: 'improve', text: '优化用户体验' }
+    ]
+  },
+  '2.0.4': {
+    title: 'v2.0.4',
+    date: '2026-06-18',
+    items: [
+      { type: 'feature', text: '新增侧边栏快捷安装更新入口，更新下载完成后左下角提示一键安装重启' }
+    ]
+  },
+  '2.0.5': {
+    title: 'v2.0.5',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复部分错误' },
+      { type: 'improve', text: '优化用户体验' }
+    ]
+  },
+  '2.0.6': {
+    title: 'v2.0.6',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复更新说明弹窗未弹出的问题' },
+      { type: 'fix', text: '修复检查更新未提示"当前已是最新版本"的问题' },
+      { type: 'feature', text: '开启自动更新后，检测到新版本将自动下载并在左下角显示安装入口' }
+    ]
+  },
+  '2.0.7': {
+    title: 'v2.0.7',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复部分错误' },
+      { type: 'improve', text: '优化用户体验' }
+    ]
+  },
+  '2.0.8': {
+    title: 'v2.0.8',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复更新说明弹窗未弹出的问题（改用拉取模式，渲染进程主动查询）' },
+      { type: 'fix', text: '修复检查更新未提示"当前已是最新版本"的问题（直接使用 checkForUpdates 返回值）' },
+      { type: 'fix', text: '修复自动更新下载后左下角安装入口未显示的问题（增强下载链路日志）' },
+      { type: 'improve', text: '优化版本号语义比较，避免误判' }
+    ]
+  },
+  '2.0.9': {
+    title: 'v2.0.9',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复更新说明弹窗未弹出的问题（弹窗原在设置页条件块内，现移至组件顶层）' },
+      { type: 'fix', text: '修复检查更新误显示"发现新版本"的问题（事件回调中加入版本号校验，防止事件覆盖）' },
+      { type: 'fix', text: '修复自动下载链路状态同步问题，增强下载失败错误处理' }
+    ]
+  },
+  '2.0.10': {
+    title: 'v2.0.10',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复更新说明弹窗未弹出的问题（main 进程先设置标志再创建窗口，并增加 localStorage fallback）' },
+      { type: 'fix', text: '修复检查更新后无提示的问题（检查状态由 IPC 返回值直接管理，避免事件覆盖）' },
+      { type: 'fix', text: '修复自动检查更新完成后不显示"当前已是最新版本"的问题' }
+    ]
   }
 };
 
 function getChangelog(version) {
   return CHANGELOGS[version] || null;
+}
+
+// 语义化版本比较：v1 > v2 返回 1，v1 < v2 返回 -1，相等返回 0
+function compareVersions(v1, v2) {
+  const parts1 = String(v1 || '').split('.').map(n => parseInt(n, 10) || 0);
+  const parts2 = String(v2 || '').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+    const a = parts1[i] || 0;
+    const b = parts2[i] || 0;
+    if (a > b) return 1;
+    if (a < b) return -1;
+  }
+  return 0;
 }
 // XBH_AI_PATCH_END
 
@@ -178,6 +272,9 @@ function App() {
   };
   // Confirm 确认框状态
   const [confirmModal, setConfirmModal] = useState(null);
+  // 更新安装确认框状态（带加载条）
+  const [updateInstallModal, setUpdateInstallModal] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
   const showConfirm = (message, onConfirm) => {
     setConfirmModal({ message, onConfirm });
   };
@@ -215,7 +312,8 @@ function App() {
     downloaded: false,
     progress: null,
     error: null,
-    info: null
+    info: null,
+    notAvailable: false
   });
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(() => {
     return localStorage.getItem('autoUpdateEnabled') !== 'false';
@@ -223,6 +321,9 @@ function App() {
   // 更新说明弹窗（版本升级后首次打开时显示）
   const [showChangelog, setShowChangelog] = useState(false);
   const [changelogContent, setChangelogContent] = useState(null);
+  // appVersion 的 ref，供事件回调中读取最新值（避免闭包捕获旧值）
+  const appVersionRef = useRef('');
+  useEffect(() => { appVersionRef.current = appVersion; }, [appVersion]);
   // XBH_AI_PATCH_END
   const [themeColors, setThemeColors] = useState({
     primary: 'emerald',
@@ -455,46 +556,67 @@ function App() {
   }, [pushRemotePathHistory]);
 
   // XBH_AI_PATCH_START
-  // 获取应用版本号 + 检测版本升级弹出更新说明
+  // 获取应用版本号 + 主动查询是否需要显示更新说明
+  // 使用拉取模式：渲染进程加载完成后主动调用 IPC 查询，避免事件推送丢失。
+  // 同时保留 localStorage fallback：即使 main 进程时序或 IPC 异常，也能通过
+  // localStorage.lastAppVersion 与当前版本的差异判断是否需要显示弹窗。
   useEffect(() => {
-    const fetchVersion = async () => {
+    const fetchVersionAndChangelog = async () => {
+      let currentVersion = '';
       if (window.electronAPI?.getVersion) {
-        const v = await window.electronAPI.getVersion();
-        setAppVersion(v);
-        // XBH_AI_PATCH_START
-        // 检测版本升级：对比 localStorage 中存储的上次版本号
-        const lastVersion = localStorage.getItem('lastAppVersion');
-        if (lastVersion && lastVersion !== v) {
-          // 版本不同，说明刚升级完，弹出更新说明
-          const changelog = getChangelog(v);
-          if (changelog) {
-            setChangelogContent({ version: v, ...changelog });
-            setShowChangelog(true);
+        currentVersion = await window.electronAPI.getVersion();
+        setAppVersion(currentVersion);
+      }
+
+      let needsShow = false;
+      let targetVersion = null;
+
+      // 1. 优先使用 main 进程的 pendingChangelog 标志
+      if (window.electronAPI?.checkChangelog) {
+        try {
+          const result = await window.electronAPI.checkChangelog();
+          if (result?.needsShow && result?.version) {
+            needsShow = true;
+            targetVersion = result.version;
           }
+        } catch (e) {
+          console.warn('[Changelog] checkChangelog 查询失败:', e);
         }
-        // 更新存储的版本号
-        localStorage.setItem('lastAppVersion', v);
-        // XBH_AI_PATCH_END
+      }
+
+      // 2. fallback：localStorage 中记录的版本与当前版本不同
+      const lastVersion = localStorage.getItem('lastAppVersion');
+      if (!needsShow && currentVersion && lastVersion !== currentVersion) {
+        needsShow = true;
+        targetVersion = currentVersion;
+      }
+
+      if (needsShow && targetVersion) {
+        const changelog = getChangelog(targetVersion);
+        if (changelog) {
+          setChangelogContent({ version: targetVersion, ...changelog });
+          setShowChangelog(true);
+        }
+      }
+
+      // 3. 更新 localStorage 中记录的版本
+      if (currentVersion) {
+        localStorage.setItem('lastAppVersion', currentVersion);
       }
     };
-    fetchVersion();
+    fetchVersionAndChangelog();
   }, []);
 
   // 监听自动更新事件
+  // 只处理下载相关事件：download-progress 和 update-downloaded。
+  // 检查状态（checking / available / notAvailable）由 IPC 调用方直接管理，
+  // 避免 electron-updater 事件与 IPC 返回值之间的竞态覆盖。
   useEffect(() => {
     if (!window.electronAPI?.onUpdaterEvent) return;
     const cleanup = window.electronAPI.onUpdaterEvent((data) => {
       const { eventName, payload } = data;
       setUpdaterState(prev => {
         switch (eventName) {
-          case 'checking-for-update':
-            return { ...prev, checking: true, available: false, error: null };
-          case 'update-available':
-            return { ...prev, checking: false, available: true, info: payload, error: null };
-          case 'update-not-available':
-            return { ...prev, checking: false, available: false, info: payload };
-          case 'error':
-            return { ...prev, checking: false, downloading: false, error: payload };
           case 'download-progress':
             return { ...prev, downloading: true, progress: payload };
           case 'update-downloaded':
@@ -513,14 +635,55 @@ function App() {
   }, [autoUpdateEnabled]);
 
   // 应用启动后自动检查更新（仅在开关开启时）
+  // 发现新版本后自动下载，下载完成后左下角显示安装图标
   useEffect(() => {
     if (!autoUpdateEnabled) return;
     if (!window.electronAPI?.checkForUpdates) return;
     const timer = setTimeout(async () => {
-      const res = await window.electronAPI.checkForUpdates();
-      // 如果服务器未配置或开发模式，静默失败（不弹错误提示，因为是自动检查）
-      if (!res?.success) {
-        console.log('自动检查更新跳过:', res?.error);
+      try {
+        console.log('[AutoUpdate] 开始自动检查更新...');
+        // 直接管理检查状态，不依赖 electron-updater 事件
+        setUpdaterState(prev => ({
+          ...prev,
+          checking: true,
+          available: false,
+          notAvailable: false,
+          error: null
+        }));
+        const res = await window.electronAPI.checkForUpdates();
+        console.log('[AutoUpdate] 检查结果:', res);
+        // 如果服务器未配置或开发模式，静默失败
+        if (!res?.success) {
+          console.log('[AutoUpdate] 自动检查跳过:', res?.error);
+          setUpdaterState(prev => ({ ...prev, checking: false, error: res?.error || '检查失败' }));
+          return;
+        }
+        // 使用 IPC 返回值更新检查状态
+        setUpdaterState(prev => ({
+          ...prev,
+          checking: false,
+          available: !!res.available,
+          notAvailable: !!res.notAvailable,
+          info: res.info || prev.info
+        }));
+        // 发现有新版本，自动下载
+        if (res.available) {
+          console.log('[AutoUpdate] 发现新版本 v' + res.info?.version + '，开始自动下载...');
+          // 标记正在下载
+          setUpdaterState(prev => ({ ...prev, downloading: true }));
+          const dlRes = await window.electronAPI?.downloadUpdate?.();
+          console.log('[AutoUpdate] 下载结果:', dlRes);
+          if (dlRes && !dlRes.success) {
+            console.error('[AutoUpdate] 下载失败:', dlRes.error);
+            setUpdaterState(prev => ({ ...prev, downloading: false, error: dlRes.error }));
+          }
+          // 下载成功后 update-downloaded 事件会触发，由 onUpdaterEvent 处理 downloaded 状态
+        } else {
+          console.log('[AutoUpdate] 当前已是最新版本');
+        }
+      } catch (err) {
+        console.error('[AutoUpdate] 自动检查更新异常:', err);
+        setUpdaterState(prev => ({ ...prev, checking: false, error: err.message }));
       }
     }, 3000); // 启动 3 秒后检查
     return () => clearTimeout(timer);
@@ -985,6 +1148,71 @@ function App() {
           {toast}
         </div>
       )}
+      {/* XBH_AI_PATCH_START */}
+      {/* 更新说明弹窗（版本升级后首次打开时显示，放在顶层确保任何页面都能弹出） */}
+      {showChangelog && changelogContent && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+          <div className={`w-full max-w-lg max-h-[80vh] flex flex-col rounded-2xl border shadow-2xl overflow-hidden ${t.primary === 'tech' ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-white border-slate-200'}`}>
+            <div className="relative px-6 py-5 bg-gradient-to-br from-cyan-500/20 via-purple-500/20 to-emerald-500/20 border-b border-[#3E4145]/50">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center shadow-lg">
+                  <DownloadCloud size={24} className="text-white" />
+                </div>
+                <div className="flex-1">
+                  <h3 className={`text-lg font-bold ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
+                    {changelogContent.title}
+                  </h3>
+                  <p className={`text-xs mt-0.5 ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'}`}>
+                    发布日期：{changelogContent.date}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowChangelog(false)}
+                  className={`p-1.5 rounded-lg transition-colors ${t.primary === 'tech' ? 'text-[#9AA0A6] hover:bg-[#3E4145] hover:text-[#E8EAED]' : 'text-[#9AA0A6] hover:bg-slate-100 hover:text-slate-600'}`}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2.5">
+              {changelogContent.items.map((item, idx) => {
+                const typeConfig = {
+                  feature: { label: '新增', color: t.primary === 'tech' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+                  fix: { label: '修复', color: t.primary === 'tech' ? 'bg-red-500/20 text-red-400 border-red-500/30' : 'bg-red-50 text-red-600 border-red-200' },
+                  improve: { label: '优化', color: t.primary === 'tech' ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' : 'bg-cyan-50 text-cyan-600 border-cyan-200' }
+                };
+                const cfg = typeConfig[item.type] || typeConfig.improve;
+                return (
+                  <div key={idx} className="flex items-start gap-3">
+                    <span className={`shrink-0 px-2 py-0.5 text-[10px] font-semibold rounded border ${cfg.color}`}>
+                      {cfg.label}
+                    </span>
+                    <span className={`text-sm leading-relaxed ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-700'}`}>
+                      {item.text}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className={`px-6 py-4 border-t flex items-center justify-between ${t.primary === 'tech' ? 'border-[#3E4145] bg-[#202124]/50' : 'border-slate-100 bg-slate-50'}`}>
+              <span className={`text-xs ${t.primary === 'tech' ? 'text-[#80868B]' : 'text-[#9AA0A6]'}`}>
+                感谢使用，如有问题请反馈
+              </span>
+              <button
+                onClick={() => setShowChangelog(false)}
+                className={`px-5 py-2 text-sm font-medium rounded-lg transition-all active:scale-95 shadow-sm ${
+                  t.primary === 'tech'
+                    ? 'bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-600 hover:to-emerald-600 text-white'
+                    : 'bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-700 hover:to-emerald-700 text-white'
+                }`}
+              >
+                知道了
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* XBH_AI_PATCH_END */}
       {/* Confirm 确认框 */}
       {confirmModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -1007,6 +1235,67 @@ function App() {
                 确定
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 更新安装确认对话框（带加载条） */}
+      {updateInstallModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className={`p-6 rounded-xl shadow-2xl max-w-sm w-full mx-4 ${t.primary === 'tech' ? 'bg-[#2D2F33]' : 'bg-white'}`}>
+            {!updateInstalling ? (
+              <>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center ${t.primary === 'tech' ? 'bg-emerald-500/20' : 'bg-emerald-100'}`}>
+                    <DownloadCloud size={20} className="text-emerald-500" />
+                  </div>
+                  <div>
+                    <h3 className={`text-base font-semibold ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
+                      安装更新并重启
+                    </h3>
+                    <p className={`text-xs ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>
+                      新版本 v{updaterState.info?.version || '未知'} 已准备就绪
+                    </p>
+                  </div>
+                </div>
+                <p className={`mb-5 text-sm ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-slate-600'}`}>
+                  安装过程中应用将自动关闭并重启，请确保已保存所有操作。是否立即安装？
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setUpdateInstallModal(false)}
+                    className={`px-4 py-2 text-sm rounded-lg transition-colors ${t.primary === 'tech' ? 'bg-[#3E4145] text-[#E8EAED] hover:bg-slate-600' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                  >
+                    稍后
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setUpdateInstalling(true);
+                      // 短暂延迟让加载条可见，然后执行安装
+                      setTimeout(() => {
+                        window.electronAPI?.installUpdate?.();
+                      }, 800);
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 transition-colors"
+                  >
+                    <RefreshCw size={14} />
+                    安装并重启
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="py-4">
+                <div className="flex items-center justify-center mb-4">
+                  <Loader2 size={32} className="animate-spin text-emerald-500" />
+                </div>
+                <p className={`text-center text-sm mb-4 ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-700'}`}>
+                  正在安装更新，应用即将重启…
+                </p>
+                <div className={`h-1.5 rounded-full overflow-hidden ${t.primary === 'tech' ? 'bg-[#3E4145]' : 'bg-slate-200'}`}>
+                  <div className="h-full bg-emerald-500 rounded-full animate-[loading_1.2s_ease-in-out_infinite]" style={{ width: '100%' }} />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1057,6 +1346,26 @@ function App() {
           </button>
           {/* XBH_AI_PATCH_END */}
         </nav>
+
+        {/* 左下角更新安装入口（已下载完成时显示） */}
+        {updaterState.downloaded && (
+          <div className="px-4 py-3 border-t border-[#3E4145]">
+            <button
+              onClick={() => setUpdateInstallModal(true)}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 transition-all active:scale-95"
+              title={`新版本 v${updaterState.info?.version || ''} 已就绪，点击安装并重启`}
+            >
+              <div className="relative">
+                <DownloadCloud size={20} />
+                <span className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+              </div>
+              <div className="flex-1 text-left">
+                <div className="text-xs font-semibold">新版本已就绪</div>
+                <div className="text-[10px] opacity-70">v{updaterState.info?.version || '未知'} · 点击安装</div>
+              </div>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Main Content */}
@@ -1602,6 +1911,14 @@ function App() {
                         </div>
                       )}
 
+                      {/* 已是最新版本 */}
+                      {updaterState.notAvailable && !updaterState.checking && (
+                        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${t.primary === 'tech' ? 'bg-slate-500/10 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>
+                          <CheckCircle2 size={14} />
+                          <span>当前已是最新版本</span>
+                        </div>
+                      )}
+
                       {/* 发现新版本 */}
                       {updaterState.available && !updaterState.downloaded && (
                         <div className={`px-3 py-2 rounded-lg text-xs ${t.primary === 'tech' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-700'}`}>
@@ -1655,10 +1972,19 @@ function App() {
                         {/* 检查更新按钮 */}
                         <button
                           onClick={async () => {
-                            setUpdaterState(prev => ({ ...prev, error: null, checking: true }));
+                            setUpdaterState(prev => ({ ...prev, error: null, checking: true, notAvailable: false, available: false }));
                             const res = await window.electronAPI?.checkForUpdates?.();
                             if (!res?.success) {
                               setUpdaterState(prev => ({ ...prev, checking: false, error: res?.error || '检查失败' }));
+                            } else {
+                              // 使用 IPC 返回的状态作为兜底（事件可能已先行更新 state）
+                              setUpdaterState(prev => ({
+                                ...prev,
+                                checking: false,
+                                available: !!res.available,
+                                notAvailable: !!res.notAvailable,
+                                info: res.info || prev.info
+                              }));
                             }
                           }}
                           disabled={updaterState.checking || updaterState.downloading}
@@ -1706,77 +2032,6 @@ function App() {
                     </div>
                   </div>
                 </div>
-                {/* XBH_AI_PATCH_END */}
-
-                {/* XBH_AI_PATCH_START */}
-                {/* 更新说明弹窗（版本升级后首次打开时显示） */}
-                {showChangelog && changelogContent && (
-                  <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
-                    <div className={`w-full max-w-lg max-h-[80vh] flex flex-col rounded-2xl border shadow-2xl overflow-hidden ${t.primary === 'tech' ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-white border-slate-200'}`}>
-                      {/* 头部：渐变背景 + 版本号 */}
-                      <div className="relative px-6 py-5 bg-gradient-to-br from-cyan-500/20 via-purple-500/20 to-emerald-500/20 border-b border-[#3E4145]/50">
-                        <div className="flex items-center gap-3">
-                          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center shadow-lg">
-                            <DownloadCloud size={24} className="text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <h3 className={`text-lg font-bold ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
-                              {changelogContent.title}
-                            </h3>
-                            <p className={`text-xs mt-0.5 ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'}`}>
-                              发布日期：{changelogContent.date}
-                            </p>
-                          </div>
-                          <button
-                            onClick={() => setShowChangelog(false)}
-                            className={`p-1.5 rounded-lg transition-colors ${t.primary === 'tech' ? 'text-[#9AA0A6] hover:bg-[#3E4145] hover:text-[#E8EAED]' : 'text-[#9AA0A6] hover:bg-slate-100 hover:text-slate-600'}`}
-                          >
-                            <X size={20} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* 内容：更新条目列表 */}
-                      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2.5">
-                        {changelogContent.items.map((item, idx) => {
-                          const typeConfig = {
-                            feature: { label: '新增', color: t.primary === 'tech' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-                            fix: { label: '修复', color: t.primary === 'tech' ? 'bg-red-500/20 text-red-400 border-red-500/30' : 'bg-red-50 text-red-600 border-red-200' },
-                            improve: { label: '优化', color: t.primary === 'tech' ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' : 'bg-cyan-50 text-cyan-600 border-cyan-200' }
-                          };
-                          const cfg = typeConfig[item.type] || typeConfig.improve;
-                          return (
-                            <div key={idx} className="flex items-start gap-3">
-                              <span className={`shrink-0 px-2 py-0.5 text-[10px] font-semibold rounded border ${cfg.color}`}>
-                                {cfg.label}
-                              </span>
-                              <span className={`text-sm leading-relaxed ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-700'}`}>
-                                {item.text}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* 底部：操作按钮 */}
-                      <div className={`px-6 py-4 border-t flex items-center justify-between ${t.primary === 'tech' ? 'border-[#3E4145] bg-[#202124]/50' : 'border-slate-100 bg-slate-50'}`}>
-                        <span className={`text-xs ${t.primary === 'tech' ? 'text-[#80868B]' : 'text-[#9AA0A6]'}`}>
-                          感谢使用，如有问题请反馈
-                        </span>
-                        <button
-                          onClick={() => setShowChangelog(false)}
-                          className={`px-5 py-2 text-sm font-medium rounded-lg transition-all active:scale-95 shadow-sm ${
-                            t.primary === 'tech'
-                              ? 'bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-600 hover:to-emerald-600 text-white'
-                              : 'bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-700 hover:to-emerald-700 text-white'
-                          }`}
-                        >
-                          知道了
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
                 {/* XBH_AI_PATCH_END */}
 
                 {/* XBH_AI_PATCH_START */}
