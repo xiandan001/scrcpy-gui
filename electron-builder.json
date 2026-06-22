@@ -1,0 +1,57 @@
+{
+  "appId": "com.scrcpy.gui",
+  "productName": "AdbDeviceManagement",
+  "directories": {
+    "buildResources": "build",
+    "output": "release"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "icon.png"
+  ],
+  "extraFiles": [
+    {
+      "from": "scrcpy-win64",
+      "to": "scrcpy-win64",
+      "filter": [
+        "**/*"
+      ]
+    }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "icon.ico",
+    "signAndEditExecutable": true,
+    "verifyUpdateCodeSignature": false
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": true,
+    "allowToChangeInstallationDirectory": true,
+    "installerIcon": "icon.ico",
+    "uninstallerIcon": "icon.ico",
+    "installerHeaderIcon": "icon.ico",
+    "include": "build/installer.nsh",
+    "deleteAppDataOnUninstall": false,
+    "runAfterFinish": true,
+    "unicode": true
+  },
+  "electronDist": ".electron-cache/electron",
+  "asar": true,
+  "asarUnpack": [],
+  "compression": "maximum",
+  "removePackageScripts": true,
+  "removePackageKeywords": true,
+  "publish": {
+    "provider": "github",
+    "owner": "xiandan001",
+    "repo": "scrcpy-gui",
+    "releaseType": "release"
+  }
+}

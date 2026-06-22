@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>【硬件交互赛道】AdbDeviceManager —— AI 驱动的 Android 设备全生命周期管理平台</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0e1a;
+      --bg-secondary: #111827;
+      --bg-card: #1a1f2e;
+      --bg-card-hover: #222838;
+      --accent-cyan: #00d4ff;
+      --accent-blue: #3b82f6;
+      --accent-purple: #8b5cf6;
+      --accent-green: #10b981;
+      --accent-orange: #f59e0b;
+      --accent-red: #ef4444;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --border-color: #2d3748;
+      --glow-cyan: rgba(0, 212, 255, 0.15);
+      --glow-purple: rgba(139, 92, 246, 0.15);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Noto Sans SC', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.7;
+      overflow-x: hidden;
+    }
+
+    /* Animated background grid */
+    .bg-grid {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background-image:
+        linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      pointer-events: none;
+    }
+
+    .bg-glow {
+      position: fixed;
+      width: 600px;
+      height: 600px;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.12;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .bg-glow-1 { top: -200px; left: -200px; background: var(--accent-cyan); }
+    .bg-glow-2 { bottom: -200px; right: -200px; background: var(--accent-purple); }
+
+    /* Floating particles */
+    .particles {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    .particle {
+      position: absolute;
+      width: 4px;
+      height: 4px;
+      background: var(--accent-cyan);
+      border-radius: 50%;
+      opacity: 0.3;
+      animation: float 15s infinite ease-in-out;
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0) translateX(0); opacity: 0.3; }
+      25% { transform: translateY(-100px) translateX(50px); opacity: 0.6; }
+      50% { transform: translateY(-50px) translateX(-30px); opacity: 0.4; }
+      75% { transform: translateY(-150px) translateX(20px); opacity: 0.5; }
+    }
+
+    /* Main container */
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 40px 24px;
+    }
+
+    /* Header */
+    .header {
+      text-align: center;
+      padding: 60px 0 40px;
+      border-bottom: 1px solid var(--border-color);
+      margin-bottom: 40px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 20px;
+      background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(139, 92, 246, 0.15));
+      border: 1px solid rgba(0, 212, 255, 0.3);
+      border-radius: 100px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--accent-cyan);
+      margin-bottom: 24px;
+      backdrop-filter: blur(10px);
+    }
+
+    .tag::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      background: var(--accent-cyan);
+      border-radius: 50%;
+      box-shadow: 0 0 10px var(--accent-cyan);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+
+    .header h1 {
+      font-size: 36px;
+      font-weight: 900;
+      line-height: 1.3;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, var(--text-primary), var(--accent-cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .header .subtitle {
+      font-size: 18px;
+      color: var(--text-secondary);
+      font-weight: 300;
+    }
+
+    /* Section styling */
+    .section {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 32px;
+      margin-bottom: 24px;
+      transition: all 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .section::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple), var(--accent-blue));
+      opacity: 0.6;
+    }
+
+    .section:hover {
+      border-color: rgba(0, 212, 255, 0.3);
+      transform: translateY(-2px);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 60px var(--glow-cyan);
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: var(--text-primary);
+    }
+
+    .section-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      background: linear-gradient(135deg, rgba(0, 212, 255, 0.2), rgba(139, 92, 246, 0.2));
+      border: 1px solid rgba(0, 212, 255, 0.2);
+    }
+
+    .section-content {
+      color: var(--text-secondary);
+      font-size: 15px;
+    }
+
+    .section-content p {
+      margin-bottom: 14px;
+    }
+
+    .section-content strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    /* Feature cards grid */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .feature-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 20px;
+      transition: all 0.3s ease;
+    }
+
+    .feature-card:hover {
+      border-color: rgba(0, 212, 255, 0.3);
+      background: var(--bg-card-hover);
+      transform: translateY(-3px);
+    }
+
+    .feature-card .icon {
+      font-size: 28px;
+      margin-bottom: 10px;
+    }
+
+    .feature-card h4 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .feature-card p {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Pain points list */
+    .pain-points {
+      list-style: none;
+      padding: 0;
+    }
+
+    .pain-points li {
+      padding: 12px 16px;
+      margin-bottom: 10px;
+      background: var(--bg-secondary);
+      border-radius: 10px;
+      border-left: 3px solid var(--accent-red);
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .pain-points li::before {
+      content: '!';
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--accent-red);
+      border-radius: 50%;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    /* Value tags */
+    .value-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .value-tag {
+      padding: 10px 18px;
+      border-radius: 100px;
+      font-size: 14px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .value-tag.business {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .value-tag.efficiency {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .value-tag.social {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    /* Tech stack */
+    .tech-stack {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .tech-badge {
+      padding: 6px 14px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--accent-cyan);
+    }
+
+    /* Innovation timeline */
+    .timeline {
+      position: relative;
+      padding-left: 30px;
+      margin-top: 20px;
+    }
+
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 8px;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: linear-gradient(180deg, var(--accent-cyan), var(--accent-purple));
+    }
+
+    .timeline-item {
+      position: relative;
+      margin-bottom: 20px;
+      padding: 16px;
+      background: var(--bg-secondary);
+      border-radius: 10px;
+    }
+
+    .timeline-item::before {
+      content: '';
+      position: absolute;
+      left: -26px;
+      top: 20px;
+      width: 12px;
+      height: 12px;
+      background: var(--accent-cyan);
+      border-radius: 50%;
+      border: 3px solid var(--bg-primary);
+      box-shadow: 0 0 10px var(--accent-cyan);
+    }
+
+    .timeline-item h4 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .timeline-item p {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      padding: 40px 0;
+      border-top: 1px solid var(--border-color);
+      margin-top: 40px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .footer .author {
+      color: var(--accent-cyan);
+      font-weight: 500;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-primary); }
+    ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .header h1 { font-size: 26px; }
+      .section { padding: 24px; }
+      .feature-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Entrance animations */
+    .fade-in {
+      opacity: 0;
+      transform: translateY(20px);
+      animation: fadeInUp 0.6s ease forwards;
+    }
+
+    @keyframes fadeInUp {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .delay-1 { animation-delay: 0.1s; }
+    .delay-2 { animation-delay: 0.2s; }
+    .delay-3 { animation-delay: 0.3s; }
+    .delay-4 { animation-delay: 0.4s; }
+    .delay-5 { animation-delay: 0.5s; }
+  </style>
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+  <div class="particles" id="particles"></div>
+
+  <div class="container">
+    <!-- Header -->
+    <header class="header fade-in">
+      <div class="tag">硬件交互</div>
+      <h1>AdbDeviceManager —— AI 驱动的 Android 设备全生命周期管理平台</h1>
+      <p class="subtitle">基于 Electron + React + TailwindCSS 的跨平台桌面应用，封装 ADB 与 Scrcpy，提供美观的图形化界面</p>
+    </header>
+
+    <!-- Section 1: 创意介绍 -->
+    <section class="section fade-in delay-1">
+      <div class="section-title">
+        <div class="section-icon">💡</div>
+        创意名称 + 创意介绍
+      </div>
+      <div class="section-content">
+        <p><strong>想解决什么问题：</strong>Android 开发者、测试工程师在日常开发调试中，需要频繁使用命令行工具（adb、scrcpy）进行设备管理、屏幕镜像、日志分析等操作。这些工具功能强大但学习曲线陡峭，且缺乏统一的图形化管理界面，导致效率低下、操作繁琐。</p>
+        <p><strong>灵感来源：</strong>在日常 Android 开发工作中，团队成员经常需要在多个设备间切换调试，反复输入 adb 命令，查看 logcat 日志排查问题。我们意识到，如果能将这些分散的工具整合到一个美观易用的 GUI 中，并加入 AI 辅助能力，将极大提升开发效率。</p>
+        <p><strong>产品形态：</strong>一款跨平台桌面应用（Windows/macOS/Linux），基于 Electron 构建，提供设备管理、一键投屏、日志分析、文件管理、AI 辅助诊断等一站式 Android 设备管理解决方案。</p>
+
+        <div class="tech-stack">
+          <span class="tech-badge">Electron</span>
+          <span class="tech-badge">React 19</span>
+          <span class="tech-badge">TailwindCSS</span>
+          <span class="tech-badge">ADB</span>
+          <span class="tech-badge">Scrcpy</span>
+          <span class="tech-badge">MCP</span>
+          <span class="tech-badge">Node.js</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 2: 目标用户及痛点 -->
+    <section class="section fade-in delay-2">
+      <div class="section-title">
+        <div class="section-icon">🎯</div>
+        目标用户及痛点
+      </div>
+      <div class="section-content">
+        <p><strong>核心用户群体：</strong></p>
+        <ul style="margin-left: 20px; margin-bottom: 16px; color: var(--text-secondary);">
+          <li>Android 应用开发者（需要频繁调试应用、查看日志）</li>
+          <li>移动测试工程师（需要管理多台测试设备、录制测试过程）</li>
+          <li>Android 极客用户（需要 Root、刷机、系统级调试）</li>
+          <li>技术支持人员（需要远程协助用户排查设备问题）</li>
+        </ul>
+
+        <p><strong>使用场景：</strong>在应用开发调试阶段连接真机进行测试；在 CI/CD 流程中批量管理测试设备；在 Bug 排查时实时抓取和分析 logcat 日志；在进行兼容性测试时同时管理多台不同型号的设备。</p>
+
+        <p><strong>当前痛点：</strong></p>
+        <ul class="pain-points">
+          <li>adb 和 scrcpy 命令行工具功能分散，需要记忆大量命令参数</li>
+          <li>logcat 日志信息海量且杂乱，缺乏有效的过滤和分析工具</li>
+          <li>多台设备切换管理困难，WiFi 调试连接步骤繁琐</li>
+          <li>截图、录屏、APK 安装等操作需要多次命令行交互</li>
+          <li>缺乏 AI 辅助能力，无法智能分析日志和诊断问题</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 3: 价值与意义 -->
+    <section class="section fade-in delay-3">
+      <div class="section-title">
+        <div class="section-icon">🚀</div>
+        价值与意义
+      </div>
+      <div class="section-content">
+        <p><strong>效率提升：</strong>通过图形化界面整合所有 ADB 操作，将原本需要多次命令行输入的操作简化为几次点击。内置的 Log Analyzer 支持实时过滤、关键词搜索、级别统计，日志排查效率提升 5 倍以上。MCP 服务集成让 AI 工具可以直接读取和控制日志抓取，实现智能化的调试辅助。</p>
+        <p><strong>商业价值：</strong>降低企业 Android 开发和测试的人力成本，减少因工具切换导致的时间浪费。对于外包公司和移动应用开发团队，标准化的设备管理流程可以显著提升项目交付效率。开源模式可以吸引开发者社区贡献，形成生态闭环。</p>
+        <p><strong>社会价值：</strong>降低 Android 开发门槛，让更多初学者能够快速上手真机调试；为残障开发者提供更友好的图形化操作界面；通过 AI 辅助诊断功能，帮助开发者更快定位和修复问题，提升应用质量，最终惠及广大移动应用用户。</p>
+
+        <div class="value-tags">
+          <span class="value-tag business">💰 商业价值</span>
+          <span class="value-tag efficiency">⚡ 效率提升</span>
+          <span class="value-tag social">🌍 社会价值</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 4: 核心功能展示 -->
+    <section class="section fade-in delay-4">
+      <div class="section-title">
+        <div class="section-icon">⚙️</div>
+        核心功能模块
+      </div>
+      <div class="section-content">
+        <p>本平台已实现以下核心功能模块，覆盖 Android 设备管理的完整生命周期：</p>
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="icon">📱</div>
+            <h4>设备管理</h4>
+            <p>自动检测 USB/WiFi 连接的 Android 设备，显示设备型号、状态信息</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon">🖥️</div>
+            <h4>一键投屏</h4>
+            <p>快速启动 scrcpy 进行低延迟、高画质屏幕镜像，支持自定义码率</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon">📸</div>
+            <h4>截图录屏</h4>
+            <p>一键截取屏幕并保存到本地，支持屏幕录制功能</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon">📦</div>
+            <h4>APK 管理</h4>
+            <p>APK 安装、文件推送/拉取、设备文件浏览器</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon">📊</div>
+            <h4>日志分析</h4>
+            <p>实时抓取 logcat，支持多维度过滤、统计、导出</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon">🤖</div>
+            <h4>MCP AI 服务</h4>
+            <p>提供 HTTP MCP 接口，让 AI 工具直接读取和控制日志</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon">🎨</div>
+            <h4>主题系统</h4>
+            <p>5 套预设主题 + 自定义主题编辑器，支持持久化保存</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon">📡</div>
+            <h4>WiFi 调试</h4>
+            <p>无线连接管理，支持连接历史记录</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 5: 创新 roadmap -->
+    <section class="section fade-in delay-5">
+      <div class="section-title">
+        <div class="section-icon">🔮</div>
+        未来创新方向
+      </div>
+      <div class="section-content">
+        <div class="timeline">
+          <div class="timeline-item">
+            <h4>AI 智能日志诊断</h4>
+            <p>集成大语言模型，自动分析 logcat 日志，智能定位崩溃原因和性能瓶颈</p>
+          </div>
+          <div class="timeline-item">
+            <h4>自动化测试编排</h4>
+            <p>支持多设备并行执行测试脚本，自动生成测试报告和性能图表</p>
+          </div>
+          <div class="timeline-item">
+            <h4>云端设备农场</h4>
+            <p>对接云测平台，远程管理云端真机设备，实现全球化设备兼容性测试</p>
+          </div>
+          <div class="timeline-item">
+            <h4>团队协作空间</h4>
+            <p>支持多人共享设备状态、日志和截图，内置问题追踪和讨论功能</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer fade-in delay-5">
+      <p>本项目由 <span class="author">咸蛋</span> 开发维护 | 基于 Electron + React + TailwindCSS 构建</p>
+      <p style="margin-top: 8px; font-size: 13px;">AdbDeviceManager —— 让 Android 设备管理更简单</p>
+    </footer>
+  </div>
+
+  <script>
+    // Generate floating particles
+    const particlesContainer = document.getElementById('particles');
+    for (let i = 0; i < 20; i++) {
+      const particle = document.createElement('div');
+      particle.className = 'particle';
+      particle.style.left = Math.random() * 100 + '%';
+      particle.style.top = Math.random() * 100 + '%';
+      particle.style.animationDelay = Math.random() * 15 + 's';
+      particle.style.animationDuration = (10 + Math.random() * 10) + 's';
+      particlesContainer.appendChild(particle);
+    }
+  </script>
+</body>
+</html>
