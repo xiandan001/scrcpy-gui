@@ -17,7 +17,8 @@ release
 .electron-cache
 
 # Private API keys (local only, packed into release builds by electron-builder)
-electron/api-keys.js
+# XBH_AI_PATCH: 必须使用 .cjs 扩展名，因为 package.json 声明了 "type": "module"
+electron/api-keys.cjs
 
 # Editor directories and files
 .vscode/*
