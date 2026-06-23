@@ -194,6 +194,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = safeListener(callback);
     ipcRenderer.on('smart-search:complete', listener);
     return () => ipcRenderer.off('smart-search:complete', listener);
-  }
+  },
+  // XBH_AI_PATCH_END
+  // XBH_AI_PATCH_START
+  // VIP 会员体系
+  vipGetStatus: () => ipcRenderer.invoke('vip:getStatus'),
+  vipGetMachineId: () => ipcRenderer.invoke('vip:getMachineId'),
+  vipActivate: (token) => ipcRenderer.invoke('vip:activate', token),
+  vipDeactivate: () => ipcRenderer.invoke('vip:deactivate')
   // XBH_AI_PATCH_END
 });

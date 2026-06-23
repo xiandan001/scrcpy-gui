@@ -19,6 +19,7 @@ const mcp = require('./lib/mcp-server.cjs');
 const autoDiagnose = require('./lib/auto-diagnose.cjs');
 const aiAnalyze = require('./lib/ai-analyze.cjs');
 const smartSearch = require('./lib/smart-search.cjs');
+const vip = require('./lib/vip.cjs');
 
 // XBH_AI_PATCH_START
 // 单实例锁定 - 确保只有一个应用实例在运行
@@ -94,6 +95,7 @@ app.whenReady().then(() => {
   autoDiagnose.register(ipcMain);
   aiAnalyze.register(ipcMain);
   smartSearch.register(ipcMain);
+  vip.register(ipcMain);
 
   createWindow();
   mcp.initMcpServer();
