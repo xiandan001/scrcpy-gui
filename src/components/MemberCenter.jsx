@@ -2,7 +2,7 @@
 // 会员中心：状态卡 + 开通支付向导 + 激活区 + 功能对比表
 // XBH_AI_PATCH: VIP 会员体系
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Crown, Copy, Check, Lock, Sparkles, ShieldCheck, Brain, Server, Loader2, Smartphone, History, X, ChevronRight, Wallet, QrCode } from 'lucide-react';
 
 // 功能对比表
@@ -91,8 +91,12 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
   const [payStep, setPayStep] = useState(0); // 0=选套餐, 1=选支付方式, 2=扫码支付, 3=完成
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [selectedMethod, setSelectedMethod] = useState(null);
-  // 机器码默认隐藏，仅支付完成后解锁可复制
-  const [machineIdUnlocked, setMachineIdUnlocked] = useState(false);
+  // 机器码默认隐藏，仅支付完成后或已是会员时解锁可复制
+  const [machineIdUnlocked, setMachineIdUnlocked] = useState(vipStatus.activated === true);
+  // 已是会员时自动解锁（异步加载 vipStatus 场景）
+  useEffect(() => {
+    if (vipStatus.activated) setMachineIdUnlocked(true);
+  }, [vipStatus.activated]);
   // XBH_AI_PATCH_END
 
   const copyMachineId = async () => {
