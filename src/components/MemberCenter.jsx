@@ -80,7 +80,7 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
   const t = theme || { primary: 'tech' };
   const isDark = t.primary === 'tech';
   const isVip = vipStatus.activated;
-  const isLoading = vipStatus.reason === 'loading' || !vipStatus.reason;
+  const isLoading = vipStatus.reason === 'loading';
   const [tokenInput, setTokenInput] = useState('');
   const [activating, setActivating] = useState(false);
   const [activateError, setActivateError] = useState('');

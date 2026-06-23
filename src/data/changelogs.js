@@ -165,6 +165,13 @@ const CHANGELOGS = {
       { type: 'improve', text: '机器码采集优化：4 个 PowerShell 合并为 1 个进程，启动耗时从 12 秒降至 4 秒' },
       { type: 'improve', text: '设备列表和连接历史在会员状态加载期间不应用限制，避免闪现锁定' }
     ]
+  },
+  '3.0.4': {
+    title: 'v3.0.4',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复会员中心一直显示"正在加载会员信息"无法进入的问题' }
+    ]
   }
 };
 
