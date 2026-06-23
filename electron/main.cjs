@@ -114,6 +114,13 @@ app.whenReady().then(() => {
 app.on('before-quit', async (event) => {
   // 清理 AI 相关资源
   aiAnalyze.resetAiState();
+  // XBH_AI_PATCH: 关闭 MCP HTTP server，避免端口占用/进程残留导致 OTA 安装器提示应用未关闭
+  mcp.closeMcpServer();
+  // 关闭 Log Analyzer 窗口（如有）
+  const logWin = ctx.getLogAnalyzerWindow();
+  if (logWin && !logWin.isDestroyed()) {
+    logWin.destroy();
+  }
   // 停止所有录屏进程（如果有）
   if (adb.hasActiveScreenRecords()) {
     event.preventDefault();

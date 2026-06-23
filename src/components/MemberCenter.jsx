@@ -80,6 +80,7 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
   const t = theme || { primary: 'tech' };
   const isDark = t.primary === 'tech';
   const isVip = vipStatus.activated;
+  const isLoading = vipStatus.reason === 'loading' || !vipStatus.reason;
   const [tokenInput, setTokenInput] = useState('');
   const [activating, setActivating] = useState(false);
   const [activateError, setActivateError] = useState('');
@@ -92,7 +93,8 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [selectedMethod, setSelectedMethod] = useState(null);
   // 机器码默认隐藏，仅支付完成后或已是会员时解锁可复制
-  const [machineIdUnlocked, setMachineIdUnlocked] = useState(vipStatus.activated === true);
+  // loading 状态下初始为 true（避免先隐藏再显示的闪烁），加载完成后按真实状态修正
+  const [machineIdUnlocked, setMachineIdUnlocked] = useState(isLoading || vipStatus.activated === true);
   // 已是会员时自动解锁（异步加载 vipStatus 场景）
   useEffect(() => {
     if (vipStatus.activated) setMachineIdUnlocked(true);
@@ -156,6 +158,31 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
     showToast?.('机器码已解锁，请复制发送给开发者获取激活码');
   };
   // XBH_AI_PATCH_END
+
+  // loading 骨架屏：状态加载中不显示具体套餐，避免先闪基础版再切会员版
+  if (isLoading) {
+    return (
+      <div className="space-y-6 max-w-4xl">
+        <div className={`p-6 rounded-xl border shadow-sm animate-pulse ${isDark ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
+          <div className="flex items-center gap-4">
+            <div className={`w-14 h-14 rounded-2xl ${isDark ? 'bg-[#3E4145]' : 'bg-slate-200'}`} />
+            <div className="flex-1 space-y-2">
+              <div className={`h-5 w-24 rounded ${isDark ? 'bg-[#3E4145]' : 'bg-slate-200'}`} />
+              <div className={`h-3 w-40 rounded ${isDark ? 'bg-[#3E4145]' : 'bg-slate-100'}`} />
+            </div>
+          </div>
+          <div className={`mt-5 pt-5 border-t ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+            <div className={`h-3 w-20 rounded mb-2 ${isDark ? 'bg-[#3E4145]' : 'bg-slate-100'}`} />
+            <div className={`h-8 w-full rounded-lg ${isDark ? 'bg-[#3E4145]' : 'bg-slate-100'}`} />
+          </div>
+        </div>
+        <div className={`flex items-center justify-center py-8 ${isDark ? 'text-[#80868B]' : 'text-slate-400'}`}>
+          <Loader2 size={20} className="animate-spin mr-2" />
+          <span className="text-sm">正在加载会员信息…</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-4xl">

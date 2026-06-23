@@ -660,7 +660,18 @@ function register(ipcMain) {
   });
 }
 
+// 供 main 进程退出时调用，关闭 MCP HTTP server
+function closeMcpServer() {
+  if (mcpServerInstance) {
+    try {
+      mcpServerInstance.close();
+    } catch (e) { /* ignore */ }
+    mcpServerInstance = null;
+  }
+}
+
 module.exports = {
   register,
   initMcpServer,
+  closeMcpServer,
 };

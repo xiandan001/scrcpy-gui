@@ -1225,8 +1225,9 @@ function App() {
                 ) : (
                   (() => {
                     const FREE_DEVICE_LIMIT = 1;
-                    const visibleDevices = vipStatus.activated ? devices : devices.slice(0, FREE_DEVICE_LIMIT);
-                    const lockedCount = vipStatus.activated ? 0 : Math.max(0, devices.length - FREE_DEVICE_LIMIT);
+                    const isVipOrLoading = vipStatus.activated || vipStatus.reason === 'loading';
+                    const visibleDevices = isVipOrLoading ? devices : devices.slice(0, FREE_DEVICE_LIMIT);
+                    const lockedCount = isVipOrLoading ? 0 : Math.max(0, devices.length - FREE_DEVICE_LIMIT);
                     return (
                       <>
                         {visibleDevices.map(device => (
@@ -1340,8 +1341,9 @@ function App() {
                   <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                     {(() => {
                       const FREE_HISTORY_LIMIT = 5;
-                      const visibleHistory = vipStatus.activated ? connectionHistory : connectionHistory.slice(0, FREE_HISTORY_LIMIT);
-                      const lockedHistoryCount = vipStatus.activated ? 0 : Math.max(0, connectionHistory.length - FREE_HISTORY_LIMIT);
+                      const isVipOrLoading = vipStatus.activated || vipStatus.reason === 'loading';
+                      const visibleHistory = isVipOrLoading ? connectionHistory : connectionHistory.slice(0, FREE_HISTORY_LIMIT);
+                      const lockedHistoryCount = isVipOrLoading ? 0 : Math.max(0, connectionHistory.length - FREE_HISTORY_LIMIT);
                       return (
                         <>
                           {visibleHistory.map((item) => (

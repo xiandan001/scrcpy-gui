@@ -152,8 +152,18 @@ const CHANGELOGS = {
     title: 'v3.0.2',
     date: '2026-06-22',
     items: [
-      { type: 'improve', text: '机器码采集改为异步并行执行，修复启动时卡顿 10 秒的问题' },
-      { type: 'improve', text: '启动时预采集机器码，窗口创建不再被阻塞，立即可交互' }
+      { type: 'improve', text: '优化应用性能' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
+  },
+  '3.0.3': {
+    title: 'v3.0.3',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复会员中心首次打开闪现基础版的问题（增加 loading 骨架屏）' },
+      { type: 'fix', text: '修复 OTA 更新安装时提示"应用未关闭"的问题（退出时清理 MCP 服务和子窗口）' },
+      { type: 'improve', text: '机器码采集优化：4 个 PowerShell 合并为 1 个进程，启动耗时从 12 秒降至 4 秒' },
+      { type: 'improve', text: '设备列表和连接历史在会员状态加载期间不应用限制，避免闪现锁定' }
     ]
   }
 };
