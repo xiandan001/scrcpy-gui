@@ -97,6 +97,9 @@ app.whenReady().then(() => {
   smartSearch.register(ipcMain);
   vip.register(ipcMain);
 
+  // XBH_AI_PATCH: 启动时异步预采集机器码（不阻塞窗口创建和 IPC）
+  vip.preload();
+
   createWindow();
   mcp.initMcpServer();
 

@@ -1,82 +1,96 @@
 // electron/lib/machine-id.cjs
 // 采集 Windows 硬件指纹（CPU + 主板 + 磁盘 + MachineGuid），输出 SHA-256 机器码
 // XBH_AI_PATCH: VIP 会员体系 - 机器码绑定
+// 性能优化：异步采集 + 并行执行 + 启动预缓存，避免 execSync 阻塞 main 进程
 
-const { execSync } = require('child_process');
+const { exec } = require('child_process');
 const crypto = require('crypto');
 
 let cachedMachineId = null;
 let cachedSources = null;
+let pendingPromise = null;
 
-// 安全执行 PowerShell 命令，失败返回空字符串
-function safeExec(cmd) {
-  try {
-    return execSync(cmd, { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch (e) {
-    return '';
-  }
+// 异步执行命令，返回 Promise<string>
+function execAsync(cmd) {
+  return new Promise((resolve) => {
+    exec(cmd, { encoding: 'utf8', timeout: 8000 }, (err, stdout) => {
+      resolve(err ? '' : stdout.trim());
+    });
+  });
 }
 
 // 规范化硬件字符串：去空白、转大写、过滤空值
 function normalize(s) {
   if (!s) return '';
   const v = String(s).trim().toUpperCase();
-  // 过滤常见无效值
   if (['', '0', 'NONE', 'NULL', 'TO BE FILLED BY O.E.M.', 'DEFAULT'].includes(v)) return '';
   return v;
 }
 
-// 采集各硬件源
-function collectSources() {
-  const sources = {};
-  try {
-    // CPU ProcessorId
-    sources.cpu = normalize(safeExec(
-      'powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).ProcessorId"'
-    ));
-    // 主板序列号
-    sources.board = normalize(safeExec(
-      'powershell -NoProfile -Command "(Get-CimInstance Win32_BaseBoard).SerialNumber"'
-    ));
-    // 主磁盘序列号
-    sources.disk = normalize(safeExec(
-      'powershell -NoProfile -Command "(Get-CimInstance Win32_DiskDrive | Select-Object -First 1).SerialNumber"'
-    ));
-    // Windows MachineGuid
-    const regOut = safeExec(
-      'reg query "HKLM\\SOFTWARE\\Microsoft\\Cryptography" /v MachineGuid'
-    );
-    const match = regOut.match(/MachineGuid\s+REG_SZ\s+([0-9a-fA-F-]+)/i);
-    sources.guid = normalize(match ? match[1] : '');
-  } catch (e) {
-    // 整体失败忽略，下面按可用源处理
-  }
-  return sources;
+// 异步并行采集所有硬件源
+async function collectSourcesAsync() {
+  const [cpu, board, disk, regOut] = await Promise.all([
+    execAsync('powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).ProcessorId"'),
+    execAsync('powershell -NoProfile -Command "(Get-CimInstance Win32_BaseBoard).SerialNumber"'),
+    execAsync('powershell -NoProfile -Command "(Get-CimInstance Win32_DiskDrive | Select-Object -First 1).SerialNumber"'),
+    execAsync('reg query "HKLM\\SOFTWARE\\Microsoft\\Cryptography" /v MachineGuid')
+  ]);
+  const match = regOut.match(/MachineGuid\s+REG_SZ\s+([0-9a-fA-F-]+)/i);
+  return {
+    cpu: normalize(cpu),
+    board: normalize(board),
+    disk: normalize(disk),
+    guid: normalize(match ? match[1] : '')
+  };
 }
 
-// 生成机器码
-function getMachineId() {
+// 异步生成机器码（并行采集 + 缓存）
+async function getMachineIdAsync() {
   if (cachedMachineId) {
     return { success: true, machineId: cachedMachineId, sources: cachedSources };
   }
-  const sources = collectSources();
-  const entries = Object.entries(sources).filter(([, v]) => v);
-  // 至少保留 2 源才生成有效机器码
-  if (entries.length < 2) {
-    return {
-      success: false,
-      error: 'hardware_fingerprint_insufficient',
-      message: '无法采集足够的硬件指纹（至少需要 2 个源）',
-      sources
-    };
-  }
-  // 拼接顺序固定：cpu|board|disk|guid
-  const raw = ['cpu', 'board', 'disk', 'guid']
-    .map(k => sources[k] || '')
-    .join('|');
-  cachedMachineId = crypto.createHash('sha256').update(raw).digest('hex');
-  cachedSources = sources;
-  return { success: true, machineId: cachedMachineId, sources };
+  // 避免并发重复采集
+  if (pendingPromise) return pendingPromise;
+
+  pendingPromise = (async () => {
+    try {
+      const sources = await collectSourcesAsync();
+      const entries = Object.entries(sources).filter(([, v]) => v);
+      if (entries.length < 2) {
+        pendingPromise = null;
+        return {
+          success: false,
+          error: 'hardware_fingerprint_insufficient',
+          message: '无法采集足够的硬件指纹（至少需要 2 个源）',
+          sources
+        };
+      }
+      const raw = ['cpu', 'board', 'disk', 'guid']
+        .map(k => sources[k] || '')
+        .join('|');
+      cachedMachineId = crypto.createHash('sha256').update(raw).digest('hex');
+      cachedSources = sources;
+      pendingPromise = null;
+      return { success: true, machineId: cachedMachineId, sources: cachedSources };
+    } catch (e) {
+      pendingPromise = null;
+      return { success: false, error: 'collect_failed', message: e.message, sources: {} };
+    }
+  })();
+  return pendingPromise;
 }
 
-module.exports = { getMachineId };
+// 同步版本：仅返回缓存（无缓存时返回 null，不阻塞）
+function getMachineIdSync() {
+  if (cachedMachineId) {
+    return { success: true, machineId: cachedMachineId, sources: cachedSources };
+  }
+  return { success: false, error: 'not_ready', message: '机器码采集中，请稍后' };
+}
+
+// 启动时预采集（在 app.whenReady 中调用）
+function preloadMachineId() {
+  return getMachineIdAsync();
+}
+
+module.exports = { getMachineIdAsync, getMachineIdSync, preloadMachineId };
