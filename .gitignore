@@ -25,6 +25,14 @@ docs/*
 !docs/*.svg
 !docs/*.webp
 
+# $XBH_AI_PATCH_START
+# 忽略本地设计规格文档目录，避免 specs 和 superpowers/specs 上传到仓库。
+specs/
+**/specs/
+superpowers/specs/
+**/superpowers/specs/
+# $XBH_AI_PATCH_END
+
 # Private API keys (local only, packed into release builds by electron-builder)
 # XBH_AI_PATCH: 必须使用 .cjs 扩展名，因为 package.json 声明了 "type": "module"
 electron/api-keys.cjs
