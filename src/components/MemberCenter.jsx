@@ -3,21 +3,31 @@
 // XBH_AI_PATCH: VIP 会员体系
 
 import { useState, useEffect } from 'react';
-import { Crown, Copy, Check, Lock, Sparkles, ShieldCheck, Brain, Server, Loader2, Smartphone, History, X, ChevronRight, Wallet, QrCode } from 'lucide-react';
+// $XBH_AI_PATCH_START
+// 同步会员中心功能对比表所需图标。
+import { Crown, Copy, Check, Lock, Sparkles, ShieldCheck, Brain, Server, Loader2, Smartphone, History, X, ChevronRight, Wallet, QrCode, Package, Activity, ClipboardCheck, ListChecks } from 'lucide-react';
+// $XBH_AI_PATCH_END
 // $XBH_AI_PATCH_START
 // 会员激活记录增强面板
 import ActivationRecordsPanel from './ActivationRecordsPanel';
 // $XBH_AI_PATCH_END
 
-// 功能对比表
+// $XBH_AI_PATCH_START
+// 同步当前版本已提供的会员权益与功能对比。
 const FEATURES = [
   { icon: Smartphone, name: '同时管理设备数量', free: '1 台', vip: '不限' },
   { icon: History, name: '连接历史记录', free: '5 条', vip: '不限' },
+  { icon: Package, name: 'App 包管理增强', free: '基础操作', vip: '完整管理' },
+  { icon: ListChecks, name: '日志诊断规则库', free: '内置规则', vip: '规则管理' },
+  { icon: Activity, name: '性能监控面板', free: '基础采样', vip: '阈值与导出' },
+  { icon: ClipboardCheck, name: '巡检报告与证据包', free: '不可用', vip: '可用' },
   { icon: ShieldCheck, name: 'AI 自动诊断', free: '可用', vip: '可用' },
   { icon: Sparkles, name: 'AI 深度分析', free: '不可用', vip: '可用' },
   { icon: Brain, name: '自然语言搜索日志', free: '不可用', vip: '可用' },
-  { icon: Server, name: 'MCP 服务集成', free: '不可用', vip: '可用' }
+  { icon: Server, name: 'MCP 服务集成', free: '不可用', vip: '可用' },
+  { icon: History, name: '激活记录与复制历史', free: '可用', vip: '可用' }
 ];
+// $XBH_AI_PATCH_END
 
 // XBH_AI_PATCH_START
 // 支付预留：套餐与支付方式数据结构（常量化，便于未来接入在线支付）

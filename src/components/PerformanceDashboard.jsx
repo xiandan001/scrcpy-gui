@@ -1,7 +1,7 @@
 // $XBH_AI_PATCH_START
 // 性能监控面板：设备指标实时采样、曲线、阈值、告警和会员导出。
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Cpu, Database, Download, Gauge, Lock, Play, RefreshCw, Save, Smartphone, Square, Thermometer, Zap } from 'lucide-react';
 
 const METRICS = [
@@ -24,6 +24,10 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
   const [thresholds, setThresholds] = useState({ cpu: 85, memory: 85, batteryTemp: 45, dataUsed: 90 });
   const [loading, setLoading] = useState(false);
   const [savingThresholds, setSavingThresholds] = useState(false);
+  // $XBH_AI_PATCH_START
+  // 记录后端实际运行中的监控设备，切换页面/设备时用于停止后台采样。
+  const runningDeviceRef = useRef('');
+  // $XBH_AI_PATCH_END
 
   const selectedDevice = onlineDevices.find(device => device.id === selectedDeviceId);
   const chartPoints = useMemo(() => history.slice(-80).map(item => ({
@@ -39,12 +43,32 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
   useEffect(() => {
     if (!selectedDeviceId && onlineDevices.length > 0) setSelectedDeviceId(onlineDevices[0].id);
     if (selectedDeviceId && !onlineDevices.some(device => device.id === selectedDeviceId)) {
+      // $XBH_AI_PATCH_START
+      // $XBH_AI_PATCH_MODIFY: 设备离线时同步停止该设备的后台采样，避免 ADB 定时任务残留。
+      if (runningDeviceRef.current === selectedDeviceId) {
+        window.electronAPI?.perfStop?.({ deviceId: selectedDeviceId });
+        runningDeviceRef.current = '';
+      }
+      // $XBH_AI_PATCH_END
       setSelectedDeviceId(onlineDevices[0]?.id || '');
       setRunning(false);
       setSnapshot(null);
       setHistory([]);
     }
   }, [onlineDevices, selectedDeviceId]);
+
+  // $XBH_AI_PATCH_START
+  // 离开性能监控页面时停止后台采样，避免 UI 已卸载但主进程仍持续调用 ADB。
+  useEffect(() => {
+    return () => {
+      const runningDeviceId = runningDeviceRef.current;
+      if (runningDeviceId) {
+        window.electronAPI?.perfStop?.({ deviceId: runningDeviceId });
+        runningDeviceRef.current = '';
+      }
+    };
+  }, []);
+  // $XBH_AI_PATCH_END
 
   useEffect(() => {
     window.electronAPI?.perfGetThresholds?.().then(res => {
@@ -72,6 +96,13 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
     if (!selectedDeviceId) return;
     setLoading(true);
     try {
+      // $XBH_AI_PATCH_START
+      // $XBH_AI_PATCH_MODIFY: 若旧设备仍在监控，先停止旧采样，保证后台只有当前设备任务。
+      if (runningDeviceRef.current && runningDeviceRef.current !== selectedDeviceId) {
+        await window.electronAPI?.perfStop?.({ deviceId: runningDeviceRef.current });
+        runningDeviceRef.current = '';
+      }
+      // $XBH_AI_PATCH_END
       const res = await window.electronAPI.perfStart({
         deviceId: selectedDeviceId,
         intervalMs,
@@ -79,6 +110,9 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
       });
       if (res.ok) {
         setRunning(true);
+        // $XBH_AI_PATCH_START
+        runningDeviceRef.current = selectedDeviceId;
+        // $XBH_AI_PATCH_END
         setIntervalMs(res.intervalMs);
         showToast?.('性能监控已启动');
       } else {
@@ -90,13 +124,35 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
   };
 
   const stopMonitor = async () => {
-    if (!selectedDeviceId) return;
-    const res = await window.electronAPI.perfStop({ deviceId: selectedDeviceId });
+    // $XBH_AI_PATCH_START
+    // $XBH_AI_PATCH_MODIFY: 优先停止真实运行中的设备，避免切换选择后停错对象。
+    const targetDeviceId = runningDeviceRef.current || selectedDeviceId;
+    if (!targetDeviceId) return;
+    const res = await window.electronAPI.perfStop({ deviceId: targetDeviceId });
+    // $XBH_AI_PATCH_END
     if (res.ok) {
       setRunning(false);
+      // $XBH_AI_PATCH_START
+      if (runningDeviceRef.current === targetDeviceId) runningDeviceRef.current = '';
+      // $XBH_AI_PATCH_END
       showToast?.('性能监控已停止');
     }
   };
+
+  // $XBH_AI_PATCH_START
+  // 设备切换时停止旧设备采样，并重置当前视图数据，避免后台和界面状态错位。
+  const switchDevice = async (nextDeviceId) => {
+    const runningDeviceId = runningDeviceRef.current;
+    if (runningDeviceId && runningDeviceId !== nextDeviceId) {
+      await window.electronAPI?.perfStop?.({ deviceId: runningDeviceId });
+      runningDeviceRef.current = '';
+    }
+    setSelectedDeviceId(nextDeviceId);
+    setSnapshot(null);
+    setHistory([]);
+    setRunning(false);
+  };
+  // $XBH_AI_PATCH_END
 
   const takeSnapshot = async () => {
     if (!selectedDeviceId) return;
@@ -154,12 +210,7 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
           <div className="flex items-center gap-2 flex-wrap">
             <select
               value={selectedDeviceId}
-              onChange={(e) => {
-                setSelectedDeviceId(e.target.value);
-                setSnapshot(null);
-                setHistory([]);
-                setRunning(false);
-              }}
+              onChange={(e) => switchDevice(e.target.value)}
               className={`px-3 py-2 rounded-lg border text-sm min-w-64 ${isDark ? 'bg-[#2D2F33] border-[#5F6368] text-[#E8EAED]' : 'bg-white border-slate-200 text-slate-700'}`}
             >
               {onlineDevices.length === 0 ? <option value="">暂无在线设备</option> : onlineDevices.map(device => (

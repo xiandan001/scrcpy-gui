@@ -203,6 +203,17 @@ const CHANGELOGS = {
       { type: 'improve', text: '优化用户体验' },
       { type: 'fix', text: '修复部分错误' }
     ]
+  },
+  // v3.5.1 发版更新说明：同步会员中心功能对比并保留泛化优化措辞。
+  '3.5.1': {
+    title: 'v3.5.1',
+    date: '2026-06-23',
+    items: [
+      { type: 'improve', text: '优化会员中心功能对比展示' },
+      { type: 'improve', text: '优化应用性能' },
+      { type: 'improve', text: '优化用户体验' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
   }
   // $XBH_AI_PATCH_END
 };
