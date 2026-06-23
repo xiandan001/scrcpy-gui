@@ -51,12 +51,10 @@ function verifyToken(token) {
     return { valid: false, error: 'bad_signature' };
   }
 
-  const verify = crypto.createVerify(null);
-  verify.update(parts[0]);
-  verify.end();
+  // Ed25519 必须使用 crypto.verify(null, data, key, sig)，不支持 createVerify(null)
   let valid;
   try {
-    valid = verify.verify(PUBLIC_KEY, sig);
+    valid = crypto.verify(null, Buffer.from(parts[0]), PUBLIC_KEY, sig);
   } catch (e) {
     return { valid: false, error: 'bad_signature' };
   }
