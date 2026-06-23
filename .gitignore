@@ -29,6 +29,13 @@ docs/*
 # XBH_AI_PATCH: 必须使用 .cjs 扩展名，因为 package.json 声明了 "type": "module"
 electron/api-keys.cjs
 
+# VIP license generator (local only, contains private key)
+tools/
+tools/license-generator.cjs
+tools/private-key.pem
+*.pem
+vip-license.cjs
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

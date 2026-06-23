@@ -128,6 +128,17 @@ const CHANGELOGS = {
       { type: 'improve', text: '架构重构：后端 main.cjs 按领域拆分为 14 个独立模块，前端 App.jsx 拆分为 data/hooks/components，大幅提升可维护性' },
       { type: 'improve', text: '代码解耦：主题配置、更新日志、设备管理、ADB 操作、APK 管理、终端逻辑分离为独立模块' }
     ]
+  },
+  '3.0.0': {
+    title: 'v3.0.0 会员体系',
+    date: '2026-06-22',
+    items: [
+      { type: 'feature', text: '新增会员中心：基础版 / 会员版双档位，Ed25519 离线签名激活码激活' },
+      { type: 'feature', text: '机器码绑定激活（CPU+主板+磁盘+MachineGuid 四源融合），防伪造防分享' },
+      { type: 'feature', text: '基础版限额：设备列表最多 1 台、连接历史最多 5 条、仅保留自动诊断' },
+      { type: 'feature', text: '会员版解锁：不限设备/历史、AI 分析、自然语言搜索、MCP 服务' },
+      { type: 'improve', text: '多点 fail-closed 校验，永不信任单独布尔标志，提升防破解强度' }
+    ]
   }
 };
 
