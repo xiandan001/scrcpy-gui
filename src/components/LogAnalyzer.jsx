@@ -2,7 +2,7 @@
 // H5: 导入 memo 用于 LogRow 性能优化
 import { useEffect, useMemo, useState, useDeferredValue, useRef, memo } from 'react';
 // XBH_AI_PATCH_END
-import { FolderOpen, Play, Square, Trash2, Download, Copy, RefreshCw, Terminal, Filter, BarChart3, HelpCircle, Radio, X, Sparkles, Loader2, Send, StopCircle, Maximize2, Minimize2, FileDown, AlertTriangle, Zap, ShieldCheck, Search, Brain, CheckCircle, Layers, ChevronDown, Smartphone } from 'lucide-react';
+import { FolderOpen, Play, Square, Trash2, Download, Copy, RefreshCw, Terminal, Filter, BarChart3, HelpCircle, Radio, X, Sparkles, Loader2, Send, StopCircle, Maximize2, Minimize2, FileDown, AlertTriangle, Zap, ShieldCheck, Search, Brain, CheckCircle, Layers, ChevronDown, Smartphone, Lock } from 'lucide-react';
 import { filterEntries, countByLevel } from '../shared/filter';
 
 const emptyFilter = {};
@@ -64,13 +64,22 @@ function fmtTs(ts) {
   return `${mm}-${dd} ${hh}:${mi}:${ss}.${ms}`;
 }
 
-export default function LogAnalyzer({ theme }) {
+export default function LogAnalyzer({ theme, vipStatus }) {
   const t = theme || {
     primary: 'tech',
     button: {
       primary: 'bg-emerald-500 hover:bg-emerald-600 text-white'
     }
   };
+  // XBH_AI_PATCH_START
+  // VIP 门控：LogAnalyzer 在独立窗口渲染，props 可能未传 vipStatus，故主动拉取
+  const [vipStatusState, setVipStatusState] = useState(null);
+  const effectiveVipStatus = vipStatus || vipStatusState;
+  const isVip = effectiveVipStatus?.activated === true;
+  const [vipBlockMsg, setVipBlockMsg] = useState('');
+  const showVipBlock = (featureName) => setVipBlockMsg(featureName);
+  const dismissVipBlock = () => setVipBlockMsg('');
+  // XBH_AI_PATCH_END
   const [devices, setDevices] = useState([]);
   const [deviceId, setDeviceId] = useState('');
   const [running, setRunning] = useState(false);
@@ -320,6 +329,15 @@ export default function LogAnalyzer({ theme }) {
           console.error('Failed to get MCP info:', e);
         }
       }
+      // XBH_AI_PATCH_START
+      // 拉取 VIP 状态（独立窗口场景）
+      try {
+        if (window.electronAPI?.vipGetStatus) {
+          const vs = await window.electronAPI.vipGetStatus();
+          setVipStatusState(vs);
+        }
+      } catch (e) { /* 静默 */ }
+      // XBH_AI_PATCH_END
     }
 
     function setupLogListeners() {
@@ -784,6 +802,11 @@ export default function LogAnalyzer({ theme }) {
   }
 
   async function onToggleMcp() {
+    // XBH_AI_PATCH: MCP - 非会员阻止
+    if (!isVip) {
+      setNote('MCP 服务为会员专属功能，请在会员中心开通');
+      return;
+    }
     if (window.electronAPI && window.electronAPI.mcpStop && window.electronAPI.mcpStart) {
       if (mcpRunning) {
         await window.electronAPI.mcpStop();
@@ -1316,7 +1339,8 @@ export default function LogAnalyzer({ theme }) {
         {/* 第二行：智能搜索 + AI 分析 + 自动诊断 + MCP + 更多菜单 */}
         <div className="flex items-center gap-4 flex-wrap">
           {/* XBH_AI_PATCH_START */}
-          {/* 智能日志搜索 */}
+          {/* 智能日志搜索（会员专属，非会员隐藏） */}
+          {isVip ? (
           <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border ${isDark ? 'border-violet-500/30 bg-violet-500/10' : 'border-violet-300 bg-violet-50'}`}>
             <Brain size={14} className={isDark ? 'text-violet-400' : 'text-violet-600'} />
             <input
@@ -1364,6 +1388,7 @@ export default function LogAnalyzer({ theme }) {
               </button>
             )}
           </div>
+          ) : null}
 
           {/* 搜索进度 */}
           {smartSearching && smartSearchProgress && (
@@ -1389,6 +1414,8 @@ export default function LogAnalyzer({ theme }) {
           {/* AI 分析按钮 */}
           <button
             onClick={() => {
+              // XBH_AI_PATCH: VIP 门控
+              if (!isVip) { showVipBlock('AI 深度分析'); return; }
               if (filtered.length === 0) {
                 setNoteType('error');
                 setNote('请先抓取或加载日志，再使用 AI 分析');
@@ -1451,6 +1478,8 @@ export default function LogAnalyzer({ theme }) {
 
           <div className="flex-1" />
 
+          {/* XBH_AI_PATCH: MCP 区域非会员隐藏 */}
+          {isVip ? (<>
           <button
             onClick={() => setMcpHelpVisible(true)}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-all ${isDark ? 'border-slate-500 hover:bg-[#3E4145] text-slate-400 active:scale-95 shadow-sm' : 'border-slate-300 hover:bg-slate-100 text-slate-500 active:scale-95 shadow-sm'}`}
@@ -1467,6 +1496,7 @@ export default function LogAnalyzer({ theme }) {
             <Radio size={14} />
             MCP: {mcpRunning ? 'ON' : 'OFF'}
           </button>
+          </>) : null}
         </div>
       </div>
 
@@ -1869,7 +1899,11 @@ export default function LogAnalyzer({ theme }) {
                       AI 分析按钮仅在 issues 状态显示，clean 状态不显示（无问题可分析） */}
                   {hasIssues && (
                     <button
-                      onClick={onAutoDiagnoseConfirm}
+                      onClick={() => {
+                        // XBH_AI_PATCH: VIP 门控
+                        if (!isVip) { showVipBlock('AI 深度分析'); return; }
+                        onAutoDiagnoseConfirm();
+                      }}
                       disabled={aiAnalyzing}
                       className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg text-white transition-colors font-medium ${aiAnalyzing ? 'bg-amber-500/40 cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-600'}`}
                     >
@@ -2244,6 +2278,37 @@ url = "http://127.0.0.1:${mcpPort}/mcp"`}
           </div>
         </div>
       )}
+
+      {/* XBH_AI_PATCH_START: VIP 拦截弹窗 */}
+      {vipBlockMsg && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
+          <div className="p-6 rounded-xl shadow-2xl max-w-sm w-full mx-4 bg-[#2D2F33] border border-[#3E4145]">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
+                <Lock size={20} className="text-amber-400" />
+              </div>
+              <div>
+                <h4 className="text-base font-semibold text-[#E8EAED]">会员专属功能</h4>
+                <p className="text-xs text-[#9AA0A6] mt-0.5">{vipBlockMsg} 仅会员可用</p>
+              </div>
+            </div>
+            <p className="text-sm text-[#9AA0A6] mb-5">当前为基础版，开通会员即可解锁全部 AI 能力与 MCP 服务。</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={dismissVipBlock} className="px-4 py-2 text-sm rounded-lg bg-[#3E4145] text-[#E8EAED] hover:bg-slate-600 transition-colors">知道了</button>
+              <button
+                onClick={() => {
+                  dismissVipBlock();
+                  if (window.electronAPI?.logAnalyzerClose) window.electronAPI.logAnalyzerClose();
+                }}
+                className="px-4 py-2 text-sm rounded-lg bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white font-medium transition-all"
+              >
+                去开通
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* XBH_AI_PATCH_END */}
     </div>
   );
 }
