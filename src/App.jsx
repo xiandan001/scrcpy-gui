@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle } from 'lucide-react';
+import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle, Crown, Lock } from 'lucide-react';
 import './index.css';
 import themes from './data/themes';
 import { getChangelog } from './data/changelogs';
 import DeviceCard from './components/DeviceCard';
+import MemberCenter from './components/MemberCenter';
 
 function App() {
   const [devices, setDevices] = useState([]);
@@ -102,6 +103,18 @@ function App() {
   const [connectionHistory, setConnectionHistory] = useState([]);
   // 终端命令历史记录（全局共享）
   const [terminalCommandHistory, setTerminalCommandHistory] = useState([]);
+  // VIP 会员状态
+  const [vipStatus, setVipStatus] = useState({
+    activated: false, scope: 'free', type: null,
+    issuedAt: null, expiresAt: null, machineId: null, reason: 'loading'
+  });
+  const refreshVipStatus = async () => {
+    if (window.electronAPI?.vipGetStatus) {
+      const s = await window.electronAPI.vipGetStatus();
+      setVipStatus(s);
+    }
+  };
+  // XBH_AI_PATCH_END
 
   const allThemes = { ...themes, ...Object.fromEntries(customThemes.map(t => [t.key, t])) };
   const theme = allThemes[currentTheme] || themes.default;
@@ -270,6 +283,10 @@ function App() {
       }
     };
     loadPushHistory();
+    // XBH_AI_PATCH_START
+    // 初始化 VIP 状态
+    refreshVipStatus();
+    // XBH_AI_PATCH_END
   }, []);
 
   useEffect(() => {
@@ -1100,6 +1117,19 @@ function App() {
             <span className="font-medium">AI 日志助手</span>
           </button>
           {/* XBH_AI_PATCH_END */}
+          {/* XBH_AI_PATCH_START 会员中心 */}
+          <button
+            onClick={() => {
+              setActiveTab('member');
+              refreshVipStatus();
+            }}
+            className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'member' ? 'bg-amber-500/20 text-amber-400' : 'hover:bg-[#2D2F33]'}`}
+            style={{ WebkitAppRegion: 'no-drag' }}
+          >
+            <Crown size={20} />
+            <span className="font-medium">会员中心</span>
+          </button>
+          {/* XBH_AI_PATCH_END */}
         </nav>
 
         {/* 左下角更新安装入口（已下载完成时显示） */}
@@ -1129,10 +1159,10 @@ function App() {
         <header className={`px-8 pb-6 border-b flex justify-between items-center sticky top-0 z-10 ${t.primary === 'tech' ? 'bg-[#202124]/90 border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
           <div>
             <h2 className={`text-2xl font-bold ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
-              {activeTab === 'devices' ? '已连接设备' : activeTab === 'history' ? '连接历史' : '全局设置'}
+              {activeTab === 'devices' ? '已连接设备' : activeTab === 'history' ? '连接历史' : activeTab === 'member' ? '会员中心' : '全局设置'}
             </h2>
             <p className={`text-sm mt-1 ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'}`}>
-              {activeTab === 'devices' ? '管理并投屏您的 Android 设备' : activeTab === 'history' ? '查看无线连接历史记录' : '配置 Scrcpy 及 ADB 相关偏好'}
+              {activeTab === 'devices' ? '管理并投屏您的 Android 设备' : activeTab === 'history' ? '查看无线连接历史记录' : activeTab === 'member' ? '管理您的会员权益与激活' : '配置 Scrcpy 及 ADB 相关偏好'}
             </p>
           </div>
 
@@ -1193,7 +1223,13 @@ function App() {
                     <p className="text-sm">请确保已开启 USB 调试并连接设备</p>
                   </div>
                 ) : (
-                  devices.map(device => (
+                  (() => {
+                    const FREE_DEVICE_LIMIT = 1;
+                    const visibleDevices = vipStatus.activated ? devices : devices.slice(0, FREE_DEVICE_LIMIT);
+                    const lockedCount = vipStatus.activated ? 0 : Math.max(0, devices.length - FREE_DEVICE_LIMIT);
+                    return (
+                      <>
+                        {visibleDevices.map(device => (
                     <DeviceCard
                       key={device.id}
                       device={device}
@@ -1245,7 +1281,19 @@ function App() {
                       onSaveTerminalCommand={handleSaveTerminalCommand}
                       onClearTerminalHistory={handleClearTerminalHistory}
                     />
-                  ))
+                  ))}
+                  {/* XBH_AI_PATCH: 非会员锁定占位卡 */}
+                  {lockedCount > 0 && (
+                    <div className={`col-span-full flex items-center justify-center gap-3 p-6 rounded-xl border-2 border-dashed ${t.primary === 'tech' ? 'border-[#3E4145] bg-slate-800/40' : 'border-slate-300 bg-slate-50'}`}>
+                      <Lock size={20} className="text-amber-400" />
+                      <span className={`text-sm ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>
+                        还有 {lockedCount} 台设备已连接，<button onClick={() => setActiveTab('member')} className="text-amber-400 hover:underline font-medium">开通会员</button>解锁全部
+                      </span>
+                    </div>
+                  )}
+                      </>
+                    );
+                  })()
                 )}
               </div>
             </>
@@ -1290,7 +1338,13 @@ function App() {
                   </div>
                 ) : (
                   <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-                    {connectionHistory.map((item) => (
+                    {(() => {
+                      const FREE_HISTORY_LIMIT = 5;
+                      const visibleHistory = vipStatus.activated ? connectionHistory : connectionHistory.slice(0, FREE_HISTORY_LIMIT);
+                      const lockedHistoryCount = vipStatus.activated ? 0 : Math.max(0, connectionHistory.length - FREE_HISTORY_LIMIT);
+                      return (
+                        <>
+                          {visibleHistory.map((item) => (
                       <div
                         key={item.id}
                         className={`p-4 rounded-xl border transition-all hover:shadow-md group ${t.primary === 'tech' ? 'bg-slate-700/50 border-[#5F6368] hover:border-slate-500' : 'bg-slate-50 border-slate-200 hover:border-slate-300'}`}
@@ -1343,11 +1397,32 @@ function App() {
                         </div>
                       </div>
                     ))}
+                    {/* XBH_AI_PATCH: 非会员历史锁定提示 */}
+                    {lockedHistoryCount > 0 && (
+                      <div className={`col-span-full flex items-center justify-center gap-3 p-5 rounded-xl border-2 border-dashed ${t.primary === 'tech' ? 'border-[#3E4145] bg-slate-800/40' : 'border-slate-300 bg-slate-50'}`}>
+                        <Lock size={18} className="text-amber-400" />
+                        <span className={`text-sm ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>
+                          还有 {lockedHistoryCount} 条历史记录，<button onClick={() => setActiveTab('member')} className="text-amber-400 hover:underline font-medium">开通会员</button>查看全部
+                        </span>
+                      </div>
+                    )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
               {/* XBH_AI_PATCH_END */}
             </div>
+          )}
+
+          {activeTab === 'member' && (
+            <MemberCenter
+              theme={theme}
+              vipStatus={vipStatus}
+              onActivated={refreshVipStatus}
+              showToast={showToast}
+            />
           )}
 
           {activeTab === 'settings' && (
