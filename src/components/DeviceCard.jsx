@@ -5,6 +5,8 @@ import ControlButton from './ControlButton';
 // $XBH_AI_PATCH_START
 // 设备巡检面板：采集逻辑在主进程 inspection 模块中
 import InspectionPanel from './InspectionPanel';
+// App 包管理增强面板
+import PackageManagerPanel from './PackageManagerPanel';
 // $XBH_AI_PATCH_END
 
 function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onScreenshot, onScreenRecordStart, onScreenRecordStop, onReboot, onRebootLoader, onRoot, onRemount, onDisconnect, showApkManager, onApkManager, onSelectApkForInstall, onSelectApkForPush, onInstallApk, onPushApk, onBrowsePath, onPullFile, onPushPathChange, showToast, apkInstallPath, apkPushPath, apkPushRemotePath, pushRemotePathHistory, apkBrowserPath, apkBrowserItems, apkBrowserLoading, operationLoading, onExecuteCommand, theme, sharedCommandHistory, onSaveTerminalCommand, onClearTerminalHistory, vipStatus, inspectionPath, onInspectionPathChange, onOpenMemberCenter }) {
@@ -31,6 +33,10 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
   const [showInspection, setShowInspection] = useState(false);
   // $XBH_AI_PATCH_END
   const commandHistory = sharedCommandHistory || [];
+  // $XBH_AI_PATCH_START
+  // 旧 APK 区块仅作为临时回退源码保留，默认不渲染。
+  const showLegacyApkManager = Boolean(globalThis.__XBH_LEGACY_APK_MANAGER__);
+  // $XBH_AI_PATCH_END
 
   const handleNameSubmit = () => {
     onNameChange(device.id, editName.trim());
@@ -343,8 +349,37 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
         {/* $XBH_AI_PATCH_END */}
       </div>
 
-      {/* APK Manager Section */}
+      {/* $XBH_AI_PATCH_START */}
+      {/* App 包管理增强：使用独立面板承载安装、推送、文件浏览、应用列表与会员操作 */}
       {showApkManager && (
+        <PackageManagerPanel
+          device={device}
+          theme={t}
+          vipStatus={vipStatus}
+          showToast={showToast}
+          onOpenMemberCenter={onOpenMemberCenter}
+          onSelectApkForInstall={onSelectApkForInstall}
+          onSelectApkForPush={onSelectApkForPush}
+          onInstallApk={onInstallApk}
+          onPushApk={onPushApk}
+          onBrowsePath={onBrowsePath}
+          onPullFile={onPullFile}
+          onPushPathChange={onPushPathChange}
+          apkInstallPath={apkInstallPath}
+          apkPushPath={apkPushPath}
+          apkPushRemotePath={apkPushRemotePath}
+          pushRemotePathHistory={pushRemotePathHistory}
+          apkBrowserPath={apkBrowserPath}
+          apkBrowserItems={apkBrowserItems}
+          apkBrowserLoading={apkBrowserLoading}
+          operationLoading={operationLoading}
+        />
+      )}
+      {/* $XBH_AI_PATCH_END */}
+
+      {/* APK Manager Section */}
+      {/* $XBH_AI_PATCH_MODIFY: 旧 APK 区块已由 PackageManagerPanel 接管，保留源码但关闭渲染以降低本次改动风险 */}
+      {showLegacyApkManager && showApkManager && (
         <div className={`border-t p-4 ${t.primary === 'tech' ? 'bg-slate-800/30' : 'bg-slate-50'}`}>
           <h4 className={`text-sm font-semibold mb-3 flex items-center gap-2 ${t.text}`}>
             <Package size={16} />

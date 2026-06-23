@@ -1,0 +1,471 @@
+// $XBH_AI_PATCH_START
+// App 包管理增强面板：保留安装/推送/浏览，并新增应用列表、详情和会员操作。
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  ChevronRight,
+  Copy,
+  Database,
+  Download,
+  Eye,
+  EyeOff,
+  File,
+  Folder,
+  FolderOpen,
+  Info,
+  Lock,
+  Package,
+  Power,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Trash2,
+  Upload
+} from 'lucide-react';
+
+function PackageManagerPanel({
+  device,
+  theme,
+  vipStatus,
+  showToast,
+  onOpenMemberCenter,
+  onSelectApkForInstall,
+  onSelectApkForPush,
+  onInstallApk,
+  onPushApk,
+  onBrowsePath,
+  onPullFile,
+  onPushPathChange,
+  apkInstallPath,
+  apkPushPath,
+  apkPushRemotePath,
+  pushRemotePathHistory,
+  apkBrowserPath,
+  apkBrowserItems,
+  apkBrowserLoading,
+  operationLoading
+}) {
+  const t = theme;
+  const isDark = t.primary === 'tech';
+  const isVip = vipStatus?.activated === true;
+  const [packages, setPackages] = useState([]);
+  const [query, setQuery] = useState('');
+  const [showSystem, setShowSystem] = useState(false);
+  const [loadingPackages, setLoadingPackages] = useState(false);
+  const [selectedPackage, setSelectedPackage] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [permissions, setPermissions] = useState([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState('');
+  const showToastRef = useRef(showToast);
+
+  const isLoading = (key) => operationLoading?.[key];
+  const packageCount = packages.length;
+  const userPackageCount = packages.filter(item => !item.system).length;
+  const filteredPackages = useMemo(() => {
+    const text = query.trim().toLowerCase();
+    return packages
+      .filter(item => showSystem || !item.system)
+      .filter(item => !text || item.packageName.toLowerCase().includes(text) || item.apkName.toLowerCase().includes(text));
+  }, [packages, query, showSystem]);
+
+  useEffect(() => {
+    showToastRef.current = showToast;
+  }, [showToast]);
+
+  const loadPackages = useCallback(async () => {
+    if (!window.electronAPI?.packageList) return;
+    setLoadingPackages(true);
+    try {
+      const res = await window.electronAPI.packageList({ deviceId: device.id });
+      if (res.ok) {
+        setPackages(res.packages || []);
+      } else {
+        showToastRef.current?.(`应用列表加载失败：${res.error || '未知错误'}`);
+      }
+    } catch (error) {
+      showToastRef.current?.(`应用列表加载异常：${error.message}`);
+    } finally {
+      setLoadingPackages(false);
+    }
+  }, [device.id]);
+
+  useEffect(() => {
+    loadPackages();
+  }, [loadPackages]);
+
+  const selectPackage = async (pkg) => {
+    setSelectedPackage(pkg);
+    setPermissions([]);
+    if (!window.electronAPI?.packageDetail) return;
+    setDetailLoading(true);
+    try {
+      const res = await window.electronAPI.packageDetail({ deviceId: device.id, packageName: pkg.packageName });
+      if (res.ok) setDetail(res.detail);
+      else showToast?.(`应用详情加载失败：${res.error || '未知错误'}`);
+    } catch (error) {
+      showToast?.(`应用详情加载异常：${error.message}`);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const requireVip = () => {
+    if (isVip) return true;
+    showToast?.('该包管理操作需要会员版');
+    onOpenMemberCenter?.();
+    return false;
+  };
+
+  const runPackageAction = async (key, label, action, refresh = true) => {
+    if (!selectedPackage || !requireVip()) return;
+    setActionLoading(key);
+    try {
+      const res = await action(selectedPackage.packageName);
+      if (res.ok) {
+        showToast?.(`${label}完成`);
+        if (refresh) await loadPackages();
+        if (selectedPackage) await selectPackage(selectedPackage);
+      } else {
+        showToast?.(`${label}失败：${res.error || '未知错误'}`);
+      }
+    } catch (error) {
+      showToast?.(`${label}异常：${error.message}`);
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const exportApk = async () => {
+    if (!selectedPackage || !requireVip()) return;
+    const result = await window.electronAPI.showSaveDialog({
+      title: '导出 APK',
+      defaultPath: `${selectedPackage.packageName}.apk`,
+      filters: [{ name: 'APK Files', extensions: ['apk'] }]
+    });
+    if (result.canceled || !result.filePath) return;
+    await runPackageAction('export', '导出 APK', (packageName) => window.electronAPI.packageExportApk({
+      deviceId: device.id,
+      packageName,
+      localPath: result.filePath
+    }), false);
+  };
+
+  const loadPermissions = async () => {
+    if (!selectedPackage || !requireVip()) return;
+    setActionLoading('permissions');
+    try {
+      const res = await window.electronAPI.packagePermissions({ deviceId: device.id, packageName: selectedPackage.packageName });
+      if (res.ok) setPermissions(res.permissions || []);
+      else showToast?.(`权限读取失败：${res.error || '未知错误'}`);
+    } catch (error) {
+      showToast?.(`权限读取异常：${error.message}`);
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const packageActionButton = (key, label, icon, onClick, tone = 'normal') => {
+    const toneClass = tone === 'danger'
+      ? 'border-red-500/30 text-red-400 hover:bg-red-500/10'
+      : isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100';
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!selectedPackage || actionLoading === key}
+        className={`px-3 py-2 rounded-lg border text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-50 ${toneClass}`}
+      >
+        {actionLoading === key ? <RefreshCw size={13} className="animate-spin" /> : icon}
+        {label}
+        {!isVip && <Lock size={12} className="text-amber-400" />}
+      </button>
+    );
+  };
+
+  return (
+    <div className={`border-t p-4 ${isDark ? 'bg-slate-800/30' : 'bg-slate-50'}`}>
+      <div className="flex items-center justify-between mb-4">
+        <h4 className={`text-sm font-semibold flex items-center gap-2 ${t.text}`}>
+          <Package size={16} />
+          App 包管理
+        </h4>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs px-2 py-1 rounded ${isDark ? 'bg-[#3E4145] text-[#9AA0A6]' : 'bg-white text-slate-500 border border-slate-200'}`}>
+            {userPackageCount}/{packageCount}
+          </span>
+          <button
+            type="button"
+            onClick={loadPackages}
+            disabled={loadingPackages}
+            className={`p-2 rounded-lg border transition-colors ${t.button.secondary} disabled:opacity-50`}
+            title="刷新应用列表"
+          >
+            <RefreshCw size={14} className={loadingPackages ? 'animate-spin' : ''} />
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="space-y-4">
+          <div className={`p-4 rounded-lg border ${isDark ? 'bg-[#202124]/70 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
+            <div className="space-y-3">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Download size={14} className={t.primary === 'pink' ? 'text-pink-500' : t.primary === 'orange' ? 'text-orange-500' : 'text-emerald-500'} />
+                  <span className={`text-sm font-medium ${t.text}`}>安装 APK</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={apkInstallPath}
+                    readOnly
+                    placeholder="选择 APK 文件"
+                    className={`min-w-[260px] flex-[1_1_260px] px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 ${t.input}`}
+                  />
+                  <button onClick={onSelectApkForInstall} disabled={isLoading(`install_${device.id}`)} className={`px-3 py-2 text-sm border rounded-lg transition-colors flex items-center gap-1 ${t.button.secondary}`}>
+                    <FolderOpen size={14} />
+                    选择
+                  </button>
+                  <button onClick={onInstallApk} disabled={!apkInstallPath || isLoading(`install_${device.id}`)} className={`px-3 py-2 text-sm rounded-lg transition-colors flex items-center gap-1 ${t.button.primary.split(' ')[0]} ${t.button.primary.split(' ')[1] || ''} disabled:opacity-50`}>
+                    {isLoading(`install_${device.id}`) ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+                    安装
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Upload size={14} className="text-blue-500" />
+                  <span className={`text-sm font-medium ${t.text}`}>推送文件</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input type="text" value={apkPushPath} readOnly placeholder="选择本地文件" className={`min-w-[260px] flex-[1_1_260px] px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 ${t.input}`} />
+                  <button onClick={onSelectApkForPush} disabled={isLoading(`push_${device.id}`)} className={`px-3 py-2 text-sm border rounded-lg transition-colors flex items-center gap-1 ${t.button.secondary}`}>
+                    <FolderOpen size={14} />
+                    选择
+                  </button>
+                  <input
+                    type="text"
+                    value={apkPushRemotePath}
+                    onChange={(e) => onPushPathChange?.(e.target.value)}
+                    list={`push-remote-path-history-${device.id}`}
+                    placeholder="/sdcard/"
+                    className={`w-40 px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 ${t.input}`}
+                  />
+                  <datalist id={`push-remote-path-history-${device.id}`}>
+                    {(pushRemotePathHistory || []).map((item, idx) => <option key={idx} value={item} />)}
+                  </datalist>
+                  <button onClick={onPushApk} disabled={!apkPushPath || isLoading(`push_${device.id}`)} className={`px-3 py-2 text-sm rounded-lg transition-colors flex items-center gap-1 ${t.button.primary.split(' ')[0]} ${t.button.primary.split(' ')[1] || ''} disabled:opacity-50`}>
+                    {isLoading(`push_${device.id}`) ? <RefreshCw size={14} className="animate-spin" /> : <Upload size={14} />}
+                    推送
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className={`p-4 rounded-lg border ${isDark ? 'bg-[#202124]/70 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
+            <div className="flex items-center gap-2 mb-3">
+              <Folder size={14} className="text-purple-500" />
+              <span className={`text-sm font-medium ${t.text}`}>设备文件</span>
+              <span className={`ml-auto text-xs font-mono px-2 py-1 rounded select-all ${isDark ? 'bg-[#3E4145] text-[#E8EAED]' : 'bg-slate-100 text-slate-600'}`}>{apkBrowserPath}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(apkBrowserPath);
+                  showToast?.(`路径已复制: ${apkBrowserPath}`);
+                }}
+                className={`p-1 transition-colors ${isDark ? 'text-[#9AA0A6] hover:text-cyan-400' : 'text-[#9AA0A6] hover:text-emerald-500'}`}
+                title="复制路径"
+              >
+                <Copy size={14} />
+              </button>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {['/', '/system/app', '/system_ext/app', '/data/app'].map(item => (
+                <button key={item} onClick={() => onBrowsePath?.(item)} className={`px-3 py-2 text-sm border rounded-lg transition-colors ${t.button.secondary}`}>
+                  {item === '/' ? '/ 根目录' : item}
+                </button>
+              ))}
+            </div>
+            <div className={`mt-3 border rounded-lg max-h-48 overflow-y-auto ${isDark ? 'bg-slate-800/50 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
+              {apkBrowserLoading ? (
+                <div className="p-4 text-center text-sm text-[#9AA0A6]">加载中...</div>
+              ) : apkBrowserItems.length === 0 ? (
+                <div className="p-4 text-center text-sm text-[#9AA0A6]">暂无文件</div>
+              ) : (
+                <div className={`divide-y ${isDark ? 'divide-slate-700' : 'divide-slate-100'}`}>
+                  {apkBrowserItems.map((item, index) => (
+                    <div
+                      key={index}
+                      className={`px-3 py-2 flex items-center justify-between cursor-pointer group ${isDark ? 'hover:bg-[#3E4145]' : 'hover:bg-slate-50'}`}
+                      onClick={() => item.isDirectory && item.name !== '.' && onBrowsePath?.(item.path)}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {item.name === '.' ? <ArrowLeft size={14} className="text-slate-400" /> : item.name === '..' ? <ArrowLeft size={14} className="text-blue-400" /> : item.isDirectory ? <Folder size={14} className="text-amber-500" /> : <File size={14} className="text-slate-400" />}
+                        <span className={`text-sm truncate ${item.name === '..' ? 'text-blue-500 font-medium' : item.name === '.' ? 'text-slate-400' : t.text}`}>
+                          {item.name === '.' ? '当前目录' : item.name === '..' ? '上一级目录' : item.name}
+                        </span>
+                      </div>
+                      {!item.isDirectory && item.name !== '.' && item.name !== '..' ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigator.clipboard.writeText(item.path);
+                              showToast?.(`路径已复制: ${item.path}`);
+                            }}
+                            className={`px-2 py-1 text-xs border rounded opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ${t.button.secondary}`}
+                          >
+                            <Copy size={12} />
+                            复制
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onPullFile?.(item.path);
+                            }}
+                            disabled={isLoading(`pull_${device.id}_${item.path}`)}
+                            className={`px-2 py-1 text-xs border rounded opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ${t.button.secondary} disabled:opacity-50`}
+                          >
+                            {isLoading(`pull_${device.id}_${item.path}`) ? <RefreshCw size={12} className="animate-spin" /> : <Download size={12} />}
+                            拉取
+                          </button>
+                        </div>
+                      ) : item.isDirectory ? (
+                        item.name !== '.' && <ChevronRight size={14} className="text-slate-400" />
+                      ) : (
+                        <span className="text-xs text-slate-400">{item.size}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className={`rounded-lg border overflow-hidden ${isDark ? 'bg-[#202124]/70 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
+          <div className={`p-3 border-b ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search size={14} className={`absolute left-3 top-1/2 -translate-y-1/2 ${isDark ? 'text-[#80868B]' : 'text-slate-400'}`} />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="搜索包名"
+                  className={`w-full pl-9 pr-3 py-2 text-sm border rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 ${t.input}`}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSystem(prev => !prev)}
+                className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 ${showSystem ? 'border-blue-500/30 bg-blue-500/10 text-blue-400' : t.button.secondary}`}
+              >
+                {showSystem ? <Eye size={13} /> : <EyeOff size={13} />}
+                系统
+              </button>
+            </div>
+          </div>
+
+          <div className="grid min-h-[420px] max-h-[720px] grid-cols-1">
+            <div className={`max-h-[320px] overflow-y-auto border-b ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+              {loadingPackages ? (
+                <div className="h-full flex items-center justify-center text-sm text-[#9AA0A6]">
+                  <RefreshCw size={16} className="animate-spin mr-2" />
+                  加载中...
+                </div>
+              ) : filteredPackages.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-sm text-[#9AA0A6]">暂无应用</div>
+              ) : filteredPackages.map(pkg => (
+                <button
+                  key={pkg.packageName}
+                  type="button"
+                  onClick={() => selectPackage(pkg)}
+                  className={`w-full text-left px-3 py-2.5 border-b transition-colors ${selectedPackage?.packageName === pkg.packageName ? 'bg-emerald-500/10' : isDark ? 'hover:bg-[#2D2F33]' : 'hover:bg-slate-50'} ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Package size={14} className={pkg.system ? 'text-slate-400' : 'text-emerald-500'} />
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm font-medium truncate ${t.text}`}>{pkg.packageName}</div>
+                      <div className="text-xs text-[#9AA0A6] truncate">{pkg.apkName || pkg.path}</div>
+                    </div>
+                    {pkg.system && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/10 text-slate-400">SYS</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="p-4 overflow-y-auto">
+              {!selectedPackage ? (
+                <div className="h-full flex flex-col items-center justify-center text-center text-[#9AA0A6]">
+                  <Info size={30} className="mb-2 opacity-60" />
+                  <div className="text-sm">选择一个应用</div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <div className={`text-sm font-semibold break-all ${t.text}`}>{selectedPackage.packageName}</div>
+                    <div className="text-xs text-[#9AA0A6] mt-1 break-all">{selectedPackage.path}</div>
+                  </div>
+                  {detailLoading ? (
+                    <div className="flex items-center text-sm text-[#9AA0A6]">
+                      <RefreshCw size={15} className="animate-spin mr-2" />
+                      加载详情...
+                    </div>
+                  ) : detail && (
+                    <div className={`text-xs rounded-lg border overflow-hidden ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+                      {[
+                        ['版本名', detail.versionName || '-'],
+                        ['版本号', detail.versionCode || '-'],
+                        ['UID', detail.userId || detail.uid || '-'],
+                        ['安装器', detail.installer || '-'],
+                        ['首次安装', detail.firstInstallTime || '-'],
+                        ['最后更新', detail.lastUpdateTime || '-']
+                      ].map(([label, value]) => (
+                        <div key={label} className={`flex gap-3 px-3 py-2 border-b last:border-b-0 ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+                          <span className="w-16 shrink-0 text-[#9AA0A6]">{label}</span>
+                          <span className={`min-w-0 break-all ${t.text}`}>{value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap gap-2">
+                    {packageActionButton('permissions', '权限', <ShieldCheck size={13} />, loadPermissions)}
+                    {packageActionButton('export', '导出', <Download size={13} />, exportApk)}
+                    {packageActionButton('stop', '停止', <Power size={13} />, () => runPackageAction('stop', '强制停止', packageName => window.electronAPI.packageForceStop({ deviceId: device.id, packageName }), false))}
+                    {packageActionButton('clear', '清数据', <Database size={13} />, () => window.confirm('确定清除该应用数据吗？') && runPackageAction('clear', '清除数据', packageName => window.electronAPI.packageClearData({ deviceId: device.id, packageName })))}
+                    {packageActionButton('disable', detail?.enabled === false ? '启用' : '停用', detail?.enabled === false ? <Eye size={13} /> : <EyeOff size={13} />, () => runPackageAction('disable', detail?.enabled === false ? '启用应用' : '停用应用', packageName => window.electronAPI.packageSetEnabled({ deviceId: device.id, packageName, enabled: detail?.enabled === false })))}
+                    {packageActionButton('uninstall', '卸载', <Trash2 size={13} />, () => window.confirm('确定卸载该应用吗？') && runPackageAction('uninstall', '卸载应用', packageName => window.electronAPI.packageUninstall({ deviceId: device.id, packageName })), 'danger')}
+                  </div>
+
+                  {permissions.length > 0 && (
+                    <div className={`rounded-lg border max-h-40 overflow-y-auto ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+                      {permissions.map((perm, index) => (
+                        <div key={`${perm.name}-${index}`} className={`px-3 py-2 text-xs border-b last:border-b-0 ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+                          <div className={`break-all ${t.text}`}>{perm.name}</div>
+                          <div className={perm.granted === true ? 'text-emerald-400' : perm.granted === false ? 'text-red-400' : 'text-[#9AA0A6]'}>
+                            {perm.granted === true ? 'granted' : perm.granted === false ? 'denied' : perm.source}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default PackageManagerPanel;
+
+// $XBH_AI_PATCH_END

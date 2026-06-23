@@ -189,7 +189,22 @@ const CHANGELOGS = {
       { type: 'improve', text: '优化设备巡检会员状态加载体验' },
       { type: 'fix', text: '修复部分错误' }
     ]
+  },
+  // $XBH_AI_PATCH_START
+  // v3.5.0 发版更新说明：仅保留用户可感知变化和泛化修复措辞。
+  '3.5.0': {
+    title: 'v3.5.0',
+    date: '2026-06-23',
+    items: [
+      { type: 'feature', text: '新增 App 包管理增强：支持应用检索、详情查看和常用管理操作' },
+      { type: 'feature', text: '新增日志诊断规则库：支持自动诊断规则管理、测试与重置' },
+      { type: 'feature', text: '新增性能监控面板：支持设备资源采样、阈值设置与数据导出' },
+      { type: 'feature', text: '新增激活码管理增强：支持激活记录、备注和复制历史' },
+      { type: 'improve', text: '优化用户体验' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
   }
+  // $XBH_AI_PATCH_END
 };
 
 function getChangelog(version) {

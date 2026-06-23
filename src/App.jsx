@@ -1,10 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle, Crown, Lock, ClipboardCheck } from 'lucide-react';
+import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle, Crown, Lock, ClipboardCheck, Gauge } from 'lucide-react';
 import './index.css';
 import themes from './data/themes';
 import { getChangelog } from './data/changelogs';
 import DeviceCard from './components/DeviceCard';
 import MemberCenter from './components/MemberCenter';
+// $XBH_AI_PATCH_START
+// 性能监控面板
+import PerformanceDashboard from './components/PerformanceDashboard';
+// $XBH_AI_PATCH_END
 
 function App() {
   const [devices, setDevices] = useState([]);
@@ -305,7 +309,7 @@ function App() {
     // 初始化 VIP 状态
     refreshVipStatus();
     // XBH_AI_PATCH_END
-  }, []);
+  }, [autoUpdateEnabled]);
 
   useEffect(() => {
     const saveThemes = async () => {
@@ -435,6 +439,8 @@ function App() {
     localStorage.setItem('autoUpdateEnabled', autoUpdateEnabled ? 'true' : 'false');
   }, [autoUpdateEnabled]);
 
+  // $XBH_AI_PATCH_START
+  // 自动更新依赖 autoUpdateEnabled，避免开关变化后启动检查仍使用旧状态。
   // 应用启动后自动检查更新（仅在开关开启时）
   // 发现新版本后自动下载，下载完成后左下角显示安装图标
   useEffect(() => {
@@ -488,7 +494,8 @@ function App() {
       }
     }, 3000); // 启动 3 秒后检查
     return () => clearTimeout(timer);
-  }, []);
+  }, [autoUpdateEnabled]);
+  // $XBH_AI_PATCH_END
   // XBH_AI_PATCH_END
 
   const handleScreenRecordStart = async (deviceId) => {
@@ -1124,6 +1131,17 @@ function App() {
             <History size={20} />
             <span className="font-medium">连接历史</span>
           </button>
+          {/* $XBH_AI_PATCH_START */}
+          {/* 性能监控主入口 */}
+          <button
+            onClick={() => setActiveTab('performance')}
+            className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'performance' ? `${t.primary === 'cyan' || t.primary === 'blue' ? 'bg-cyan-500/20 text-cyan-400' : t.primary === 'pink' ? 'bg-pink-500/20 text-pink-400' : t.primary === 'green' ? 'bg-green-500/20 text-green-400' : t.primary === 'orange' ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400'}` : 'hover:bg-[#2D2F33]'}`}
+            style={{ WebkitAppRegion: 'no-drag' }}
+          >
+            <Gauge size={20} />
+            <span className="font-medium">性能监控</span>
+          </button>
+          {/* $XBH_AI_PATCH_END */}
           <button
             onClick={() => setActiveTab('settings')}
             className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'settings' ? `${t.primary === 'cyan' || t.primary === 'blue' ? 'bg-cyan-500/20 text-cyan-400' : t.primary === 'pink' ? 'bg-pink-500/20 text-pink-400' : t.primary === 'green' ? 'bg-green-500/20 text-green-400' : t.primary === 'orange' ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400'}` : 'hover:bg-[#2D2F33]'}`}
@@ -1187,12 +1205,15 @@ function App() {
         {/* Header */}
         <header className={`px-8 pb-6 border-b flex justify-between items-center sticky top-0 z-10 ${t.primary === 'tech' ? 'bg-[#202124]/90 border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
           <div>
+            {/* $XBH_AI_PATCH_START */}
+            {/* 性能监控 Tab 标题与描述 */}
             <h2 className={`text-2xl font-bold ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
-              {activeTab === 'devices' ? '已连接设备' : activeTab === 'history' ? '连接历史' : activeTab === 'member' ? '会员中心' : '全局设置'}
+              {activeTab === 'devices' ? '已连接设备' : activeTab === 'history' ? '连接历史' : activeTab === 'performance' ? '性能监控' : activeTab === 'member' ? '会员中心' : '全局设置'}
             </h2>
             <p className={`text-sm mt-1 ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'}`}>
-              {activeTab === 'devices' ? '管理并投屏您的 Android 设备' : activeTab === 'history' ? '查看无线连接历史记录' : activeTab === 'member' ? '管理您的会员权益与激活' : '配置 Scrcpy 及 ADB 相关偏好'}
+              {activeTab === 'devices' ? '管理并投屏您的 Android 设备' : activeTab === 'history' ? '查看无线连接历史记录' : activeTab === 'performance' ? '观察设备资源与进程状态' : activeTab === 'member' ? '管理您的会员权益与激活' : '配置 Scrcpy 及 ADB 相关偏好'}
             </p>
+            {/* $XBH_AI_PATCH_END */}
           </div>
 
           {activeTab === 'devices' && (
@@ -1452,6 +1473,19 @@ function App() {
               {/* XBH_AI_PATCH_END */}
             </div>
           )}
+
+          {/* $XBH_AI_PATCH_START */}
+          {/* 性能监控页面 */}
+          {activeTab === 'performance' && (
+            <PerformanceDashboard
+              devices={devices}
+              theme={theme}
+              vipStatus={vipStatus}
+              showToast={showToast}
+              onOpenMemberCenter={() => setActiveTab('member')}
+            />
+          )}
+          {/* $XBH_AI_PATCH_END */}
 
           {activeTab === 'member' && (
             <MemberCenter

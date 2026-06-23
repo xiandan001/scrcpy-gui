@@ -4,6 +4,10 @@ import { useEffect, useMemo, useState, useDeferredValue, useRef, memo } from 're
 // XBH_AI_PATCH_END
 import { FolderOpen, Play, Square, Trash2, Download, Copy, RefreshCw, Terminal, Filter, BarChart3, HelpCircle, Radio, X, Sparkles, Loader2, Send, StopCircle, Maximize2, Minimize2, FileDown, AlertTriangle, Zap, ShieldCheck, Search, Brain, CheckCircle, Layers, ChevronDown, Smartphone, Lock } from 'lucide-react';
 import { filterEntries, countByLevel } from '../shared/filter';
+// $XBH_AI_PATCH_START
+// 日志诊断规则库面板
+import DiagnosticRuleLibrary from './DiagnosticRuleLibrary';
+// $XBH_AI_PATCH_END
 
 const emptyFilter = {};
 
@@ -113,6 +117,10 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   // AI 自动诊断状态
   const [autoDiagnoseEnabled, setAutoDiagnoseEnabled] = useState(true);
   const [autoDiagnoseAlert, setAutoDiagnoseAlert] = useState(null); // { issues, summary, timestamp }
+  // $XBH_AI_PATCH_START
+  // 日志诊断规则库弹窗状态
+  const [ruleLibraryOpen, setRuleLibraryOpen] = useState(false);
+  // $XBH_AI_PATCH_END
   const autoDiagnoseListenersRef = useRef([]);
   // 缓存最后一次检测到异常的 alert，用于"展开监控"时恢复显示（而非显示空状态）
   const lastAutoDiagnoseAlertRef = useRef(null);
@@ -1440,6 +1448,18 @@ export default function LogAnalyzer({ theme, vipStatus }) {
             自动诊断: {autoDiagnoseEnabled ? 'ON' : 'OFF'}
           </button>
 
+          {/* $XBH_AI_PATCH_START */}
+          {/* 日志诊断规则库入口 */}
+          <button
+            onClick={() => setRuleLibraryOpen(true)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${ruleLibraryOpen ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400' : isDark ? 'border-slate-500 hover:bg-[#3E4145] text-slate-400 active:scale-95 shadow-sm' : 'border-slate-300 hover:bg-slate-100 text-slate-500 active:scale-95 shadow-sm'}`}
+            title="诊断规则库"
+          >
+            <Layers size={14} />
+            规则库
+          </button>
+          {/* $XBH_AI_PATCH_END */}
+
           {/* 自动诊断已开启但监控窗口被隐藏时，显示"展开监控"按钮 */}
           {autoDiagnoseEnabled && !autoDiagnoseAlert && (
             <button
@@ -2278,6 +2298,17 @@ url = "http://127.0.0.1:${mcpPort}/mcp"`}
           </div>
         </div>
       )}
+
+      {/* $XBH_AI_PATCH_START */}
+      {/* 日志诊断规则库弹窗 */}
+      <DiagnosticRuleLibrary
+        theme={t}
+        open={ruleLibraryOpen}
+        onClose={() => setRuleLibraryOpen(false)}
+        isVip={isVip}
+        onVipRequired={showVipBlock}
+      />
+      {/* $XBH_AI_PATCH_END */}
 
       {/* XBH_AI_PATCH_START: VIP 拦截弹窗 */}
       {vipBlockMsg && (

@@ -9,9 +9,13 @@
 
 const https = require('https');
 const { StringDecoder } = require('string_decoder');
+const fs = require('fs');
+const path = require('path');
+const { app } = require('electron');
 
 const ctx = require('./app-context.cjs');
 const aiAnalyze = require('./ai-analyze.cjs');
+const vip = require('./vip.cjs');
 const {
   AGNES_API_URL,
   AGNES_API_KEYS,
@@ -20,46 +24,81 @@ const {
   getNextApiKey,
 } = aiAnalyze.aiKeys;
 
-// 预编译关键词正则（按问题类型分组）
-const AUTO_DIAGNOSE_PATTERNS = [
+// $XBH_AI_PATCH_START
+// 日志诊断规则库：内置规则基础版可用，自定义规则与导入导出由会员版解锁。
+const AUTO_DIAGNOSE_RULES_FILE = 'auto-diagnose-rules.json';
+const AUTO_DIAGNOSE_BUILTIN_RULES = [
   {
+    id: 'builtin-crash',
     type: 'crash',
     label: 'Java Crash',
     severity: 'fatal',
-    // FATAL EXCEPTION / AndroidRuntime / CRASH: 等典型 Java 崩溃标志
-    regex: /FATAL\s+EXCEPTION|AndroidRuntime.*FATAL|CRASH:|java\.lang\.\w+Exception|NullPointerException|IllegalStateException|ClassCastException|ArrayIndexOutOfBoundsException/i
+    pattern: 'FATAL\\s+EXCEPTION|AndroidRuntime.*FATAL|CRASH:|java\\.lang\\.\\w+Exception|NullPointerException|IllegalStateException|ClassCastException|ArrayIndexOutOfBoundsException',
+    flags: 'i',
+    keywords: ['FATAL', 'AndroidRuntime', 'CRASH:', 'Exception', 'NullPointerException'],
+    enabled: true,
+    builtIn: true
   },
   {
+    id: 'builtin-anr',
     type: 'anr',
     label: 'ANR',
     severity: 'fatal',
-    regex: /ANR\s+in\s+|Application\s+Not\s+Responding|ANRManager|not\s+responding/i
+    pattern: 'ANR\\s+in\\s+|Application\\s+Not\\s+Responding|ANRManager|not\\s+responding',
+    flags: 'i',
+    keywords: ['ANR', 'Application', 'responding'],
+    enabled: true,
+    builtIn: true
   },
   {
+    id: 'builtin-native-crash',
     type: 'native_crash',
     label: 'Native Crash',
     severity: 'fatal',
-    regex: /SIGSEGV|signal\s+11|SIGABRT|signal\s+6|tombstone|libc.*Fatal|backtrace:/i
+    pattern: 'SIGSEGV|signal\\s+11|SIGABRT|signal\\s+6|tombstone|libc.*Fatal|backtrace:',
+    flags: 'i',
+    keywords: ['SIGSEGV', 'SIGABRT', 'signal', 'tombstone', 'backtrace:'],
+    enabled: true,
+    builtIn: true
   },
   {
+    id: 'builtin-oom',
     type: 'oom',
     label: 'OOM',
     severity: 'fatal',
-    regex: /OutOfMemoryError|Failed\s+to\s+allocate|OutOfMem/i
+    pattern: 'OutOfMemoryError|Failed\\s+to\\s+allocate|OutOfMem',
+    flags: 'i',
+    keywords: ['OutOfMemory', 'allocate', 'OutOfMem'],
+    enabled: true,
+    builtIn: true
   },
   {
+    id: 'builtin-watchdog',
     type: 'watchdog',
     label: 'Watchdog',
     severity: 'error',
-    regex: /Watchdog|watchdog.*killed|Blocked\s+in\s+handler/i
+    pattern: 'Watchdog|watchdog.*killed|Blocked\\s+in\\s+handler',
+    flags: 'i',
+    keywords: ['Watchdog', 'watchdog', 'Blocked', 'handler'],
+    enabled: true,
+    builtIn: true
   },
   {
+    id: 'builtin-kernel-panic',
     type: 'kernel_panic',
     label: 'Kernel Panic',
     severity: 'fatal',
-    regex: /Kernel\s+Panic|BUG:|oops:|Unable\s+to\s+handle/i
+    pattern: 'Kernel\\s+Panic|BUG:|oops:|Unable\\s+to\\s+handle',
+    flags: 'i',
+    keywords: ['Panic', 'BUG:', 'oops', 'Unable'],
+    enabled: true,
+    builtIn: true
   }
 ];
+const AUTO_DIAGNOSE_BUILTIN_IDS = new Set(AUTO_DIAGNOSE_BUILTIN_RULES.map(rule => rule.id));
+let diagnoseRuleStateCache = null;
+let compiledRuleCache = null;
+// $XBH_AI_PATCH_END
 
 // 自动诊断状态
 // - autoDiagnoseEnabled: 总开关（用户可在 UI 关闭）
@@ -75,35 +114,185 @@ function getLogStore() {
   return require('./log-analyzer.cjs').getLogStore();
 }
 
+// $XBH_AI_PATCH_START
+// 规则库持久化与编译缓存
+function getRulesFilePath() {
+  return path.join(app.getPath('userData'), AUTO_DIAGNOSE_RULES_FILE);
+}
+
+function createDefaultRuleState() {
+  return {
+    version: 1,
+    builtinEnabled: Object.fromEntries(AUTO_DIAGNOSE_BUILTIN_RULES.map(rule => [rule.id, true])),
+    customRules: []
+  };
+}
+
+function readRuleState() {
+  if (diagnoseRuleStateCache) return diagnoseRuleStateCache;
+  const defaults = createDefaultRuleState();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getRulesFilePath(), 'utf8'));
+    diagnoseRuleStateCache = {
+      version: 1,
+      builtinEnabled: { ...defaults.builtinEnabled, ...(parsed.builtinEnabled || {}) },
+      customRules: Array.isArray(parsed.customRules)
+        ? parsed.customRules.map(normalizeCustomRule).filter(Boolean)
+        : []
+    };
+  } catch {
+    diagnoseRuleStateCache = defaults;
+  }
+  return diagnoseRuleStateCache;
+}
+
+function writeRuleState(state) {
+  diagnoseRuleStateCache = {
+    version: 1,
+    builtinEnabled: { ...createDefaultRuleState().builtinEnabled, ...(state.builtinEnabled || {}) },
+    customRules: Array.isArray(state.customRules) ? state.customRules.map(normalizeCustomRule).filter(Boolean) : []
+  };
+  compiledRuleCache = null;
+  fs.mkdirSync(path.dirname(getRulesFilePath()), { recursive: true });
+  fs.writeFileSync(getRulesFilePath(), JSON.stringify(diagnoseRuleStateCache, null, 2), 'utf8');
+}
+
+function getEffectiveRules() {
+  const state = readRuleState();
+  const builtin = AUTO_DIAGNOSE_BUILTIN_RULES.map(rule => ({
+    ...rule,
+    enabled: state.builtinEnabled[rule.id] !== false
+  }));
+  return [...builtin, ...state.customRules];
+}
+
+function getCompiledRules() {
+  if (compiledRuleCache) return compiledRuleCache;
+  compiledRuleCache = getEffectiveRules()
+    .filter(rule => rule.enabled !== false)
+    .map(rule => {
+      try {
+        return { ...rule, regex: new RegExp(rule.pattern, normalizeRegexFlags(rule.flags)) };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  return compiledRuleCache;
+}
+
+function normalizeCustomRule(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+  const id = String(rule.id || `custom-${Date.now()}-${Math.random().toString(16).slice(2)}`).trim();
+  const label = String(rule.label || '').trim();
+  const pattern = String(rule.pattern || '').trim();
+  if (!id || !label || !pattern || AUTO_DIAGNOSE_BUILTIN_IDS.has(id)) return null;
+  try {
+    new RegExp(pattern, normalizeRegexFlags(rule.flags));
+  } catch {
+    return null;
+  }
+  return {
+    id,
+    type: String(rule.type || 'custom').trim() || 'custom',
+    label,
+    severity: ['info', 'warning', 'error', 'fatal'].includes(rule.severity) ? rule.severity : 'error',
+    pattern,
+    flags: normalizeRegexFlags(rule.flags),
+    keywords: normalizeKeywords(rule.keywords),
+    enabled: rule.enabled !== false,
+    builtIn: false,
+    description: String(rule.description || '').trim(),
+    updatedAt: rule.updatedAt || new Date().toISOString()
+  };
+}
+
+function normalizeRuleInput(raw) {
+  const rule = normalizeCustomRule(raw);
+  if (!rule) {
+    const error = validateRuleShape(raw);
+    return { ok: false, error };
+  }
+  return { ok: true, rule: { ...rule, updatedAt: new Date().toISOString() } };
+}
+
+function validateRuleShape(raw) {
+  if (!raw || typeof raw !== 'object') return 'rule_invalid';
+  if (!String(raw.label || '').trim()) return 'label_required';
+  if (!String(raw.pattern || '').trim()) return 'pattern_required';
+  try {
+    new RegExp(String(raw.pattern || ''), normalizeRegexFlags(raw.flags));
+  } catch (error) {
+    return `regex_invalid: ${error.message}`;
+  }
+  return 'rule_invalid';
+}
+
+function normalizeKeywords(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => String(item || '').trim()).filter(Boolean).slice(0, 12);
+  }
+  return String(value || '')
+    .split(/[,，\n]/)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function normalizeRegexFlags(flags) {
+  const raw = String(flags || 'i');
+  const allowed = new Set(['i', 'm', 'u']);
+  return Array.from(new Set(raw.split('').filter(flag => allowed.has(flag)))).join('') || 'i';
+}
+
+async function ensureVipForRules() {
+  const status = await vip.getStatusAsync();
+  return status.activated === true;
+}
+
+function publicRules() {
+  return getEffectiveRules().map(rule => ({
+    id: rule.id,
+    type: rule.type,
+    label: rule.label,
+    severity: rule.severity,
+    pattern: rule.pattern,
+    flags: rule.flags,
+    keywords: rule.keywords || [],
+    enabled: rule.enabled !== false,
+    builtIn: rule.builtIn === true,
+    description: rule.description || '',
+    updatedAt: rule.updatedAt || null
+  }));
+}
+// $XBH_AI_PATCH_END
+
 /**
  * 检测单行日志是否命中关键问题
  * @param {string} line 原始日志行
  * @returns {{type:string,label:string,severity:string}|null}
  */
 function detectIssue(line) {
-  // XBH_AI_PATCH_START
-  // 关键词预筛：先用 String.includes 做快速过滤，避免对每行都执行 6 个正则
-  // 预筛关键词覆盖所有 6 类问题的特征词
-  const AUTO_DIAGNOSE_PRE_KEYWORDS = [
-    'FATAL', 'ANR', 'SIGSEGV', 'signal', 'OutOfMemory',
-    'Watchdog', 'tombstone', 'Panic', 'BUG:', 'oops',
-    'AndroidRuntime', 'CRASH:', 'Exception', 'Application',
-    'responding', 'allocate', 'Blocked', 'handler', 'Unable'
-  ];
-  let hit = false;
-  for (let i = 0; i < AUTO_DIAGNOSE_PRE_KEYWORDS.length; i++) {
-    if (line.indexOf(AUTO_DIAGNOSE_PRE_KEYWORDS[i]) !== -1) {
-      hit = true;
-      break;
+  // $XBH_AI_PATCH_START
+  // 使用可配置规则库，规则级关键词预筛减少每行正则次数；无关键词的自定义规则直接执行正则。
+  const rules = getCompiledRules();
+  for (const rule of rules) {
+    if (rule.keywords?.length) {
+      let keywordHit = false;
+      for (const keyword of rule.keywords) {
+        if (line.indexOf(keyword) !== -1) {
+          keywordHit = true;
+          break;
+        }
+      }
+      if (!keywordHit) continue;
+    }
+    rule.regex.lastIndex = 0;
+    if (rule.regex.test(line)) {
+      return { type: rule.type, label: rule.label, severity: rule.severity, ruleId: rule.id };
     }
   }
-  if (!hit) return null;
-  // XBH_AI_PATCH_END
-  for (const p of AUTO_DIAGNOSE_PATTERNS) {
-    if (p.regex.test(line)) {
-      return { type: p.type, label: p.label, severity: p.severity };
-    }
-  }
+  // $XBH_AI_PATCH_END
   return null;
 }
 
@@ -224,6 +413,97 @@ function resetAutoDiagnoseLastFire() {
 }
 
 function register(ipcMain) {
+  // $XBH_AI_PATCH_START
+  // 诊断规则库 IPC：基础版可使用内置规则与重置，会员版解锁自定义规则和导入导出。
+  ipcMain.handle('auto-diagnose:rules:list', async () => {
+    return { ok: true, rules: publicRules() };
+  });
+
+  ipcMain.handle('auto-diagnose:rules:save', async (event, args) => {
+    const raw = args?.rule || args;
+    const state = readRuleState();
+    if (AUTO_DIAGNOSE_BUILTIN_IDS.has(raw?.id)) {
+      state.builtinEnabled[raw.id] = raw.enabled !== false;
+      writeRuleState(state);
+      resetAutoDiagnoseLastFire();
+      return { ok: true, rules: publicRules() };
+    }
+    if (!(await ensureVipForRules())) {
+      return { ok: false, code: 'vip_required', error: '自定义诊断规则为会员专属功能，请先开通会员' };
+    }
+    const normalized = normalizeRuleInput(raw);
+    if (!normalized.ok) return { ok: false, error: normalized.error };
+    const existingIndex = state.customRules.findIndex(rule => rule.id === normalized.rule.id);
+    if (existingIndex >= 0) state.customRules[existingIndex] = normalized.rule;
+    else state.customRules.unshift(normalized.rule);
+    writeRuleState(state);
+    resetAutoDiagnoseLastFire();
+    return { ok: true, rule: normalized.rule, rules: publicRules() };
+  });
+
+  ipcMain.handle('auto-diagnose:rules:delete', async (event, args) => {
+    if (!(await ensureVipForRules())) {
+      return { ok: false, code: 'vip_required', error: '删除自定义规则为会员专属功能，请先开通会员' };
+    }
+    const id = String(args?.id || '').trim();
+    if (!id || AUTO_DIAGNOSE_BUILTIN_IDS.has(id)) return { ok: false, error: 'builtin_rule_cannot_delete' };
+    const state = readRuleState();
+    const before = state.customRules.length;
+    state.customRules = state.customRules.filter(rule => rule.id !== id);
+    writeRuleState(state);
+    resetAutoDiagnoseLastFire();
+    return { ok: true, deleted: before !== state.customRules.length, rules: publicRules() };
+  });
+
+  ipcMain.handle('auto-diagnose:rules:reset', async () => {
+    writeRuleState(createDefaultRuleState());
+    resetAutoDiagnoseLastFire();
+    return { ok: true, rules: publicRules() };
+  });
+
+  ipcMain.handle('auto-diagnose:rules:test', async (event, args) => {
+    const line = String(args?.line || '');
+    const rawRule = args?.rule;
+    if (rawRule) {
+      const normalized = normalizeRuleInput(rawRule);
+      if (!normalized.ok) return { ok: false, error: normalized.error };
+      const regex = new RegExp(normalized.rule.pattern, normalized.rule.flags);
+      return { ok: true, matched: regex.test(line), rule: normalized.rule };
+    }
+    const issue = detectIssue(line);
+    return { ok: true, matched: !!issue, issue };
+  });
+
+  ipcMain.handle('auto-diagnose:rules:export', async () => {
+    if (!(await ensureVipForRules())) {
+      return { ok: false, code: 'vip_required', error: '导出诊断规则为会员专属功能，请先开通会员' };
+    }
+    return { ok: true, rules: publicRules(), exportedAt: new Date().toISOString() };
+  });
+
+  ipcMain.handle('auto-diagnose:rules:import', async (event, args) => {
+    if (!(await ensureVipForRules())) {
+      return { ok: false, code: 'vip_required', error: '导入诊断规则为会员专属功能，请先开通会员' };
+    }
+    const incoming = Array.isArray(args?.rules) ? args.rules : [];
+    const state = readRuleState();
+    for (const raw of incoming) {
+      if (AUTO_DIAGNOSE_BUILTIN_IDS.has(raw?.id)) {
+        state.builtinEnabled[raw.id] = raw.enabled !== false;
+        continue;
+      }
+      const normalized = normalizeRuleInput(raw);
+      if (!normalized.ok) continue;
+      const existingIndex = state.customRules.findIndex(rule => rule.id === normalized.rule.id);
+      if (existingIndex >= 0) state.customRules[existingIndex] = normalized.rule;
+      else state.customRules.push(normalized.rule);
+    }
+    writeRuleState(state);
+    resetAutoDiagnoseLastFire();
+    return { ok: true, rules: publicRules() };
+  });
+  // $XBH_AI_PATCH_END
+
   // 用户确认后触发 AI 分析（带自动诊断上下文）
   ipcMain.handle('auto-diagnose:analyze', async (event, args) => {
     try {
@@ -463,7 +743,11 @@ function register(ipcMain) {
 
   // 获取自动诊断状态
   ipcMain.handle('auto-diagnose:status', async () => {
-    return { ok: true, enabled: autoDiagnoseEnabled };
+    // $XBH_AI_PATCH_START
+    // 返回规则数量，供前端展示规则库状态。
+    const rules = publicRules();
+    return { ok: true, enabled: autoDiagnoseEnabled, ruleCount: rules.filter(rule => rule.enabled).length, rules };
+    // $XBH_AI_PATCH_END
   });
 
   // 清空自动诊断去抖时间戳（用户手动清除后可立即再次触发）
