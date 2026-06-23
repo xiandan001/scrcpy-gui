@@ -20,6 +20,10 @@ const autoDiagnose = require('./lib/auto-diagnose.cjs');
 const aiAnalyze = require('./lib/ai-analyze.cjs');
 const smartSearch = require('./lib/smart-search.cjs');
 const vip = require('./lib/vip.cjs');
+// $XBH_AI_PATCH_START
+// 设备巡检报告与证据包导出 IPC 模块
+const inspection = require('./lib/inspection.cjs');
+// $XBH_AI_PATCH_END
 
 // XBH_AI_PATCH_START
 // 单实例锁定 - 确保只有一个应用实例在运行
@@ -96,6 +100,10 @@ app.whenReady().then(() => {
   aiAnalyze.register(ipcMain);
   smartSearch.register(ipcMain);
   vip.register(ipcMain);
+  // $XBH_AI_PATCH_START
+  // 注册设备巡检报告与证据包导出模块
+  inspection.register(ipcMain);
+  // $XBH_AI_PATCH_END
 
   // XBH_AI_PATCH: 启动时异步预采集机器码（不阻塞窗口创建和 IPC）
   vip.preload();

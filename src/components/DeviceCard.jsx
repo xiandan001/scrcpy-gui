@@ -1,9 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { Smartphone, Unplug, Play, Camera, Video, Volume2, VolumeX, Shield, Save, RotateCcw, Loader, Package, Terminal, Pencil, Download, Upload, FolderOpen, Folder, File, ChevronRight, ArrowLeft, Copy, RefreshCw, Send, Loader2, Maximize2, Minimize2, X } from 'lucide-react';
+import { Smartphone, Unplug, Play, Camera, Video, Volume2, VolumeX, Shield, Save, RotateCcw, Loader, Package, Terminal, Pencil, Download, Upload, FolderOpen, Folder, File, ChevronRight, ArrowLeft, Copy, RefreshCw, Send, Loader2, Maximize2, Minimize2, X, ClipboardCheck } from 'lucide-react';
 import themes from '../data/themes';
 import ControlButton from './ControlButton';
+// $XBH_AI_PATCH_START
+// 设备巡检面板：采集逻辑在主进程 inspection 模块中
+import InspectionPanel from './InspectionPanel';
+// $XBH_AI_PATCH_END
 
-function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onScreenshot, onScreenRecordStart, onScreenRecordStop, onReboot, onRebootLoader, onRoot, onRemount, onDisconnect, showApkManager, onApkManager, onSelectApkForInstall, onSelectApkForPush, onInstallApk, onPushApk, onBrowsePath, onPullFile, onPushPathChange, showToast, apkInstallPath, apkPushPath, apkPushRemotePath, pushRemotePathHistory, apkBrowserPath, apkBrowserItems, apkBrowserLoading, operationLoading, onExecuteCommand, theme, sharedCommandHistory, onSaveTerminalCommand, onClearTerminalHistory }) {
+function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onScreenshot, onScreenRecordStart, onScreenRecordStop, onReboot, onRebootLoader, onRoot, onRemount, onDisconnect, showApkManager, onApkManager, onSelectApkForInstall, onSelectApkForPush, onInstallApk, onPushApk, onBrowsePath, onPullFile, onPushPathChange, showToast, apkInstallPath, apkPushPath, apkPushRemotePath, pushRemotePathHistory, apkBrowserPath, apkBrowserItems, apkBrowserLoading, operationLoading, onExecuteCommand, theme, sharedCommandHistory, onSaveTerminalCommand, onClearTerminalHistory, vipStatus, inspectionPath, onInspectionPathChange, onOpenMemberCenter }) {
   const isOnline = device.status === 'device';
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(deviceName || '');
@@ -22,6 +26,10 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
   const [showHistory, setShowHistory] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isSavingRecord, setIsSavingRecord] = useState(false);
+  // $XBH_AI_PATCH_START
+  // 设备巡检弹窗状态
+  const [showInspection, setShowInspection] = useState(false);
+  // $XBH_AI_PATCH_END
   const commandHistory = sharedCommandHistory || [];
 
   const handleNameSubmit = () => {
@@ -322,6 +330,17 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
           theme={t}
           isOnline={isOnline}
         />
+        {/* $XBH_AI_PATCH_START */}
+        {/* 设备巡检报告与证据包导出入口 */}
+        <ControlButton
+          icon={<ClipboardCheck size={16} />}
+          label="巡检"
+          onClick={() => setShowInspection(true)}
+          disabled={!isOnline}
+          theme={t}
+          isOnline={isOnline}
+        />
+        {/* $XBH_AI_PATCH_END */}
       </div>
 
       {/* APK Manager Section */}
@@ -752,6 +771,20 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
           </div>
         </div>
       )}
+      {/* $XBH_AI_PATCH_START */}
+      {/* 设备巡检报告与证据包导出面板 */}
+      <InspectionPanel
+        open={showInspection}
+        device={device}
+        theme={t}
+        vipStatus={vipStatus}
+        inspectionPath={inspectionPath}
+        onInspectionPathChange={onInspectionPathChange}
+        onClose={() => setShowInspection(false)}
+        onOpenMemberCenter={onOpenMemberCenter}
+        showToast={showToast}
+      />
+      {/* $XBH_AI_PATCH_END */}
     </div>
   );
 }

@@ -55,6 +55,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadScreenshotPath: () => ipcRenderer.invoke('settings:loadScreenshotPath'),
   saveScreenRecordPath: (path) => ipcRenderer.invoke('settings:saveScreenRecordPath', path),
   loadScreenRecordPath: () => ipcRenderer.invoke('settings:loadScreenRecordPath'),
+  // XBH_AI_PATCH_START
+  // 巡检保存路径设置
+  saveInspectionPath: (path) => ipcRenderer.invoke('settings:saveInspectionPath', path),
+  loadInspectionPath: () => ipcRenderer.invoke('settings:loadInspectionPath'),
+  // XBH_AI_PATCH_END
   selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
   getUserDataPath: () => ipcRenderer.invoke('app:getUserDataPath'),
   // XBH_AI_PATCH_START
@@ -201,6 +206,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vipGetStatus: () => ipcRenderer.invoke('vip:getStatus'),
   vipGetMachineId: () => ipcRenderer.invoke('vip:getMachineId'),
   vipActivate: (token) => ipcRenderer.invoke('vip:activate', token),
-  vipDeactivate: () => ipcRenderer.invoke('vip:deactivate')
+  vipDeactivate: () => ipcRenderer.invoke('vip:deactivate'),
   // XBH_AI_PATCH_END
+  // $XBH_AI_PATCH_START
+  // 设备巡检报告与证据包导出
+  inspectionStart: (args) => ipcRenderer.invoke('inspection:start', args),
+  inspectionCancel: () => ipcRenderer.invoke('inspection:cancel'),
+  inspectionOpenFolder: (folderPath) => ipcRenderer.invoke('inspection:openFolder', folderPath),
+  onInspectionProgress: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('inspection:progress', listener);
+    return () => ipcRenderer.off('inspection:progress', listener);
+  },
+  onInspectionDone: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('inspection:done', listener);
+    return () => ipcRenderer.off('inspection:done', listener);
+  }
+  // $XBH_AI_PATCH_END
 });

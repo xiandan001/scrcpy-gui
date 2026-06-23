@@ -336,7 +336,7 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           const vs = await window.electronAPI.vipGetStatus();
           setVipStatusState(vs);
         }
-      } catch (e) { /* 静默 */ }
+      } catch { /* 静默 */ }
       // XBH_AI_PATCH_END
     }
 
