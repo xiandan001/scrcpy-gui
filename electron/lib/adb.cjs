@@ -140,9 +140,28 @@ function register(ipcMain) {
   });
 
   // Basic device control handlers
+  // XBH_AI_PATCH: 使用 spawn + 参数数组，避免 Windows cmd 解析管道符/重定向符
+  // 用户输入的 command（含 |、>、< 等）整体传给 Android shell 执行
   ipcMain.handle('adb:shell', async (event, { deviceId, command }) => {
     try {
-      const output = await runCommand(`adb -s ${deviceId} shell ${command}`);
+      const output = await new Promise((resolve, reject) => {
+        const proc = spawn('adb', ['-s', deviceId, 'shell', command], {
+          windowsHide: true,
+          encoding: 'utf8'
+        });
+        let stdout = '';
+        let stderr = '';
+        proc.stdout.on('data', (data) => { stdout += data.toString(); });
+        proc.stderr.on('data', (data) => { stderr += data.toString(); });
+        proc.on('error', reject);
+        proc.on('close', (code) => {
+          if (code !== 0) {
+            reject(new Error(stderr.trim() || `Command failed with code ${code}`));
+          } else {
+            resolve(stdout.trim());
+          }
+        });
+      });
       return { success: true, output };
     } catch (error) {
       return { success: false, error: error.message };

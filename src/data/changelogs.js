@@ -172,6 +172,13 @@ const CHANGELOGS = {
     items: [
       { type: 'fix', text: '修复会员中心一直显示"正在加载会员信息"无法进入的问题' }
     ]
+  },
+  '3.0.5': {
+    title: 'v3.0.5',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复终端执行含管道符的 adb shell 命令时报错乱码的问题（如 dumpsys window | grep）' }
+    ]
   }
 };
 
