@@ -26,9 +26,23 @@ function App() {
   // XBH_AI_PATCH_START
   // Toast 提示状态
   const [toast, setToast] = useState(null);
+  // $XBH_AI_PATCH_START
+  // 避免连续提示时旧定时器清掉新的 Toast。
+  const toastTimerRef = useRef(null);
+  // $XBH_AI_PATCH_END
   const showToast = (message, duration = 5000) => {
+    // $XBH_AI_PATCH_START
+    // $XBH_AI_PATCH_MODIFY: 每次显示新 Toast 前先清理旧定时器，防止提示闪退。
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
     setToast(message);
-    setTimeout(() => setToast(null), duration);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, duration);
+    // $XBH_AI_PATCH_END
   };
   // Confirm 确认框状态
   const [confirmModal, setConfirmModal] = useState(null);
@@ -128,6 +142,18 @@ function App() {
   const allThemes = { ...themes, ...Object.fromEntries(customThemes.map(t => [t.key, t])) };
   const theme = allThemes[currentTheme] || themes.default;
 
+  // $XBH_AI_PATCH_START
+  // 组件卸载时清理 Toast 定时器，避免窗口关闭后仍触发状态更新。
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, []);
+  // $XBH_AI_PATCH_END
+
   const saveCustomTheme = () => {
     const themeName = newThemeName.trim() || `自定义${customThemes.length + 1}`;
     const isDarkCard = themeColors.card.includes('slate-800') || themeColors.card.includes('gradient');
@@ -206,14 +232,22 @@ function App() {
     setError('');
     try {
       if (window.electronAPI) {
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('获取设备列表超时，请检查 ADB 是否正常运行')), 10000)
-        );
-        const devs = await Promise.race([
-          window.electronAPI.getDevices(),
-          timeoutPromise
-        ]);
-        setDevices(devs);
+        // $XBH_AI_PATCH_START
+        // $XBH_AI_PATCH_MODIFY: ADB 提前返回时清理超时定时器，避免频繁刷新设备后残留等待任务。
+        let timeoutId = null;
+        try {
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('获取设备列表超时，请检查 ADB 是否正常运行')), 10000);
+          });
+          const devs = await Promise.race([
+            window.electronAPI.getDevices(),
+            timeoutPromise
+          ]);
+          setDevices(devs);
+        } finally {
+          if (timeoutId) clearTimeout(timeoutId);
+        }
+        // $XBH_AI_PATCH_END
       } else {
         // Mock data for browser testing
         setDevices([

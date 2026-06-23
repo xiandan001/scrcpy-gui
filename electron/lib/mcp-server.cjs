@@ -28,6 +28,10 @@ const MCP_PROTOCOL_VERSION = '2025-03-26';
 let mcpPort = 49321;
 let mcpServerInstance = null;
 const mcpSessions = new Map();
+// $XBH_AI_PATCH_START
+// MCP 会话清理定时器需要随服务生命周期启停，避免反复启动/停止后累积 interval。
+let mcpSessionCleanupTimer = null;
+// $XBH_AI_PATCH_END
 
 function buildMcpTools() {
   return [
@@ -624,12 +628,18 @@ function initMcpServer() {
     console.log(`[MCP] Server listening on http://127.0.0.1:${mcpPort}`);
     mcpServerInstance = server;
   });
-  setInterval(() => {
-    const now = Date.now();
-    for (const [id, s] of mcpSessions) {
-      if (now - s.createdAt > 3600000) mcpSessions.delete(id);
-    }
-  }, 300000).unref();
+  // $XBH_AI_PATCH_START
+  // $XBH_AI_PATCH_MODIFY: 只创建一个会话清理定时器，服务关闭时由 closeMcpServer 清理。
+  if (!mcpSessionCleanupTimer) {
+    mcpSessionCleanupTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [id, s] of mcpSessions) {
+        if (now - s.createdAt > 3600000) mcpSessions.delete(id);
+      }
+    }, 300000);
+    mcpSessionCleanupTimer.unref?.();
+  }
+  // $XBH_AI_PATCH_END
 }
 
 function register(ipcMain) {
@@ -652,10 +662,10 @@ function register(ipcMain) {
   });
 
   ipcMain.handle('mcp:stop', async () => {
-    if (mcpServerInstance) {
-      mcpServerInstance.close();
-      mcpServerInstance = null;
-    }
+    // $XBH_AI_PATCH_START
+    // $XBH_AI_PATCH_MODIFY: 复用统一清理函数，确保 HTTP server、session 和清理定时器一起释放。
+    closeMcpServer();
+    // $XBH_AI_PATCH_END
     return { ok: true, running: false };
   });
 }
@@ -668,6 +678,13 @@ function closeMcpServer() {
     } catch (e) { /* ignore */ }
     mcpServerInstance = null;
   }
+  // $XBH_AI_PATCH_START
+  if (mcpSessionCleanupTimer) {
+    clearInterval(mcpSessionCleanupTimer);
+    mcpSessionCleanupTimer = null;
+  }
+  mcpSessions.clear();
+  // $XBH_AI_PATCH_END
 }
 
 module.exports = {

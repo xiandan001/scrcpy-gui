@@ -43,15 +43,20 @@ function register(ipcMain) {
       sender: event.sender,
       intervalMs,
       includeProcesses: isVip && args?.includeProcesses !== false,
-      running: true
+      running: true,
+      // $XBH_AI_PATCH_START
+      // 防止 ADB 响应慢时 setInterval 重叠触发多批采样命令。
+      inFlight: false
+      // $XBH_AI_PATCH_END
     };
     monitors.set(deviceId, monitor);
-    await collectAndPush(monitor);
+    // $XBH_AI_PATCH_START
+    // $XBH_AI_PATCH_MODIFY: 采样统一走串行 tick，避免命令堆积造成卡顿或资源泄漏。
+    await runMonitorTick(monitor);
     monitor.timer = setInterval(() => {
-      collectAndPush(monitor).catch(error => {
-        broadcastUpdate(deviceId, { ok: false, error: error.message, timestamp: Date.now() });
-      });
+      runMonitorTick(monitor);
     }, intervalMs);
+    // $XBH_AI_PATCH_END
     return { ok: true, deviceId, intervalMs, vip: isVip };
   });
 
@@ -116,9 +121,30 @@ async function collectAndPush(monitor) {
   if (!monitor.running) return;
   const status = await vip.getStatusAsync();
   const snapshot = await collectSnapshot(monitor.deviceId, status.activated === true && monitor.includeProcesses);
+  // $XBH_AI_PATCH_START
+  // $XBH_AI_PATCH_MODIFY: 采样期间若用户停止/切换设备，丢弃已过期结果，避免旧数据回写界面。
+  if (!monitor.running || monitors.get(monitor.deviceId) !== monitor) return;
+  // $XBH_AI_PATCH_END
   appendHistory(monitor.deviceId, snapshot, status.activated === true);
   broadcastUpdate(monitor.deviceId, { ok: true, snapshot });
 }
+
+// $XBH_AI_PATCH_START
+// 串行执行单次性能采样；上一轮未结束时跳过本轮，保护 ADB 和渲染进程。
+async function runMonitorTick(monitor) {
+  if (!monitor.running || monitor.inFlight) return;
+  monitor.inFlight = true;
+  try {
+    await collectAndPush(monitor);
+  } catch (error) {
+    if (monitor.running && monitors.get(monitor.deviceId) === monitor) {
+      broadcastUpdate(monitor.deviceId, { ok: false, error: error.message, timestamp: Date.now() });
+    }
+  } finally {
+    monitor.inFlight = false;
+  }
+}
+// $XBH_AI_PATCH_END
 
 async function collectSnapshot(deviceId, includeProcesses) {
   const [cpu, meminfo, df, battery, thermal, top] = await Promise.all([
