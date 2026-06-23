@@ -163,6 +163,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 日志显示区域变更时重新扫描（搜索完成 / 返回原日志）
   autoDiagnoseRescan: (args) => ipcRenderer.invoke('auto-diagnose:rescan', args),
   // XBH_AI_PATCH_END
+  // $XBH_AI_PATCH_START
+  // 日志诊断规则库
+  autoDiagnoseRulesList: () => ipcRenderer.invoke('auto-diagnose:rules:list'),
+  autoDiagnoseRulesSave: (args) => ipcRenderer.invoke('auto-diagnose:rules:save', args),
+  autoDiagnoseRulesDelete: (args) => ipcRenderer.invoke('auto-diagnose:rules:delete', args),
+  autoDiagnoseRulesReset: () => ipcRenderer.invoke('auto-diagnose:rules:reset'),
+  autoDiagnoseRulesTest: (args) => ipcRenderer.invoke('auto-diagnose:rules:test', args),
+  autoDiagnoseRulesExport: () => ipcRenderer.invoke('auto-diagnose:rules:export'),
+  autoDiagnoseRulesImport: (args) => ipcRenderer.invoke('auto-diagnose:rules:import', args),
+  // $XBH_AI_PATCH_END
   onAutoDiagnose: (callback) => {
     const listener = safeListener(callback);
     ipcRenderer.on('auto-diagnose:detected', listener);
@@ -207,6 +217,39 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vipGetMachineId: () => ipcRenderer.invoke('vip:getMachineId'),
   vipActivate: (token) => ipcRenderer.invoke('vip:activate', token),
   vipDeactivate: () => ipcRenderer.invoke('vip:deactivate'),
+  // $XBH_AI_PATCH_START
+  // 会员激活记录、备注与复制历史
+  vipGetActivationRecords: () => ipcRenderer.invoke('vip:getActivationRecords'),
+  vipUpdateActivationRecordNote: (args) => ipcRenderer.invoke('vip:updateActivationRecordNote', args),
+  vipAddCopyHistory: (args) => ipcRenderer.invoke('vip:addCopyHistory', args),
+  vipClearCopyHistory: () => ipcRenderer.invoke('vip:clearCopyHistory'),
+  // $XBH_AI_PATCH_END
+  // $XBH_AI_PATCH_START
+  // App 包管理增强
+  packageList: (args) => ipcRenderer.invoke('package:list', args),
+  packageDetail: (args) => ipcRenderer.invoke('package:detail', args),
+  packagePermissions: (args) => ipcRenderer.invoke('package:permissions', args),
+  packageExportApk: (args) => ipcRenderer.invoke('package:exportApk', args),
+  packageUninstall: (args) => ipcRenderer.invoke('package:uninstall', args),
+  packageClearData: (args) => ipcRenderer.invoke('package:clearData', args),
+  packageForceStop: (args) => ipcRenderer.invoke('package:forceStop', args),
+  packageSetEnabled: (args) => ipcRenderer.invoke('package:setEnabled', args),
+  // $XBH_AI_PATCH_END
+  // $XBH_AI_PATCH_START
+  // 性能监控面板
+  perfStart: (args) => ipcRenderer.invoke('perf:start', args),
+  perfStop: (args) => ipcRenderer.invoke('perf:stop', args),
+  perfSnapshot: (args) => ipcRenderer.invoke('perf:snapshot', args),
+  perfHistory: (args) => ipcRenderer.invoke('perf:history', args),
+  perfExport: (args) => ipcRenderer.invoke('perf:export', args),
+  perfGetThresholds: () => ipcRenderer.invoke('perf:getThresholds'),
+  perfSetThresholds: (args) => ipcRenderer.invoke('perf:setThresholds', args),
+  onPerformanceUpdate: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('performance:update', listener);
+    return () => ipcRenderer.off('performance:update', listener);
+  },
+  // $XBH_AI_PATCH_END
   // XBH_AI_PATCH_END
   // $XBH_AI_PATCH_START
   // 设备巡检报告与证据包导出

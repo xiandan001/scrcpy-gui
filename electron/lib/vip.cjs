@@ -15,10 +15,84 @@ MCowBQYDK2VwAyEAaf5YkO6Yb4Oz7mcVQNAmx+pb5hiSEzCy9pRYzzR8pEs=
 -----END PUBLIC KEY-----`;
 
 const TOKEN_FILE = 'vip-token.txt';
+// $XBH_AI_PATCH_START
+// 激活记录、备注与复制历史持久化文件
+const ACTIVATION_RECORDS_FILE = 'vip-activation-records.json';
+// $XBH_AI_PATCH_END
 
 function getTokenPath() {
   return path.join(app.getPath('userData'), TOKEN_FILE);
 }
+
+// $XBH_AI_PATCH_START
+// 激活记录数据读写：只记录本机激活流程证据，不参与授权判定。
+function getActivationRecordsPath() {
+  return path.join(app.getPath('userData'), ACTIVATION_RECORDS_FILE);
+}
+
+function readActivationRecordData() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getActivationRecordsPath(), 'utf8'));
+    return {
+      version: 1,
+      records: Array.isArray(parsed.records) ? parsed.records : [],
+      copyHistory: Array.isArray(parsed.copyHistory) ? parsed.copyHistory : []
+    };
+  } catch {
+    return { version: 1, records: [], copyHistory: [] };
+  }
+}
+
+function writeActivationRecordData(data) {
+  const normalized = {
+    version: 1,
+    records: Array.isArray(data.records) ? data.records.slice(0, 200) : [],
+    copyHistory: Array.isArray(data.copyHistory) ? data.copyHistory.slice(0, 200) : []
+  };
+  fs.mkdirSync(path.dirname(getActivationRecordsPath()), { recursive: true });
+  fs.writeFileSync(getActivationRecordsPath(), JSON.stringify(normalized, null, 2), 'utf8');
+  return normalized;
+}
+
+function appendActivationRecord(payload, machineId, token) {
+  const data = readActivationRecordData();
+  const tokenHash = crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 16);
+  const duplicate = data.records.find(record => record.tokenHash === tokenHash && record.machineId === machineId);
+  const record = {
+    id: duplicate?.id || `act-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    activatedAt: new Date().toISOString(),
+    machineId,
+    scope: payload.s === 'vip' ? 'vip' : 'free',
+    type: payload.t || null,
+    issuedAt: payload.i || null,
+    expiresAt: payload.e || null,
+    tokenHash,
+    note: duplicate?.note || '',
+    reSignNote: '如更换设备或机器码变化，请复制当前机器码与本记录截图联系开发者重签。'
+  };
+  if (duplicate) {
+    data.records = data.records.map(item => item.id === duplicate.id ? { ...duplicate, ...record } : item);
+  } else {
+    data.records.unshift(record);
+  }
+  writeActivationRecordData(data);
+  return record;
+}
+
+function addCopyHistory(kind, value) {
+  const safeKind = String(kind || 'machineId').trim().slice(0, 40) || 'machineId';
+  const safeValue = String(value || '').trim();
+  if (!safeValue) return readActivationRecordData();
+  const data = readActivationRecordData();
+  data.copyHistory.unshift({
+    id: `copy-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    kind: safeKind,
+    value: safeValue,
+    copiedAt: new Date().toISOString()
+  });
+  return writeActivationRecordData(data);
+}
+// $XBH_AI_PATCH_END
 
 // 返回 free 基线状态（携带本机机器码）
 function freeBaseStatus(mid, reason) {
@@ -139,6 +213,10 @@ function register(ipcMain) {
     // 持久化
     try {
       fs.writeFileSync(getTokenPath(), String(token).trim(), 'utf8');
+      // $XBH_AI_PATCH_START
+      // 激活成功后写入本机激活记录，便于后续备注、到期和重签追踪。
+      appendActivationRecord(payload, mid.machineId, token);
+      // $XBH_AI_PATCH_END
     } catch (e) {
       return { success: false, error: 'write_failed', detail: e.message };
     }
@@ -152,6 +230,40 @@ function register(ipcMain) {
     } catch (e) { /* 文件不存在无碍 */ }
     return { success: true, status: await computeStatusAsync() };
   });
+
+  // $XBH_AI_PATCH_START
+  // 激活记录增强：记录、备注、复制历史与重签流程说明。
+  ipcMain.handle('vip:getActivationRecords', async () => {
+    return { ok: true, ...readActivationRecordData() };
+  });
+
+  ipcMain.handle('vip:updateActivationRecordNote', async (event, args) => {
+    const id = String(args?.id || '').trim();
+    const note = String(args?.note || '').slice(0, 1000);
+    if (!id) return { ok: false, error: 'record_id_required' };
+    const data = readActivationRecordData();
+    let updated = false;
+    data.records = data.records.map(record => {
+      if (record.id !== id) return record;
+      updated = true;
+      return { ...record, note, noteUpdatedAt: new Date().toISOString() };
+    });
+    writeActivationRecordData(data);
+    return { ok: true, updated, ...readActivationRecordData() };
+  });
+
+  ipcMain.handle('vip:addCopyHistory', async (event, args) => {
+    const data = addCopyHistory(args?.kind, args?.value);
+    return { ok: true, ...data };
+  });
+
+  ipcMain.handle('vip:clearCopyHistory', async () => {
+    const data = readActivationRecordData();
+    data.copyHistory = [];
+    writeActivationRecordData(data);
+    return { ok: true, ...readActivationRecordData() };
+  });
+  // $XBH_AI_PATCH_END
 }
 
 // 供其他 main 进程模块同步调用的状态查询（使用缓存，不阻塞）
@@ -192,6 +304,8 @@ module.exports = {
   // $XBH_AI_PATCH_START
   // 供新增巡检模块使用异步会员状态，避免机器码缓存未就绪时误判为基础版
   getStatusAsync: computeStatusAsync,
+  readActivationRecordData,
+  addCopyHistory,
   // $XBH_AI_PATCH_END
   verifyToken,
   preload

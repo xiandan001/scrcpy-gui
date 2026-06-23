@@ -23,6 +23,9 @@ const vip = require('./lib/vip.cjs');
 // $XBH_AI_PATCH_START
 // 设备巡检报告与证据包导出 IPC 模块
 const inspection = require('./lib/inspection.cjs');
+// 管理增强：App 包管理与性能监控 IPC 模块
+const packageManager = require('./lib/package-manager.cjs');
+const performanceMonitor = require('./lib/performance-monitor.cjs');
 // $XBH_AI_PATCH_END
 
 // XBH_AI_PATCH_START
@@ -101,8 +104,10 @@ app.whenReady().then(() => {
   smartSearch.register(ipcMain);
   vip.register(ipcMain);
   // $XBH_AI_PATCH_START
-  // 注册设备巡检报告与证据包导出模块
+  // 注册设备巡检报告、App 包管理与性能监控模块
   inspection.register(ipcMain);
+  packageManager.register(ipcMain);
+  performanceMonitor.register(ipcMain);
   // $XBH_AI_PATCH_END
 
   // XBH_AI_PATCH: 启动时异步预采集机器码（不阻塞窗口创建和 IPC）
@@ -129,6 +134,10 @@ app.on('before-quit', async (event) => {
   if (logWin && !logWin.isDestroyed()) {
     logWin.destroy();
   }
+  // $XBH_AI_PATCH_START
+  // 停止性能监控定时器，避免退出时仍有 ADB 采样任务。
+  performanceMonitor.cleanup();
+  // $XBH_AI_PATCH_END
   // 停止所有录屏进程（如果有）
   if (adb.hasActiveScreenRecords()) {
     event.preventDefault();
