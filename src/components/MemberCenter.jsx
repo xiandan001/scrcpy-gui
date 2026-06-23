@@ -91,6 +91,8 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
   const [payStep, setPayStep] = useState(0); // 0=选套餐, 1=选支付方式, 2=扫码支付, 3=完成
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [selectedMethod, setSelectedMethod] = useState(null);
+  // 机器码默认隐藏，仅支付完成后解锁可复制
+  const [machineIdUnlocked, setMachineIdUnlocked] = useState(false);
   // XBH_AI_PATCH_END
 
   const copyMachineId = async () => {
@@ -143,10 +145,11 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
     setSelectedPlan(null);
     setSelectedMethod(null);
   };
-  // 支付完成 → 跳转到激活步骤
+  // 支付完成 → 解锁机器码 + 跳转到激活步骤
   const onPayComplete = () => {
+    setMachineIdUnlocked(true);
     closePayWizard();
-    showToast?.('请将机器码发送给开发者获取激活码');
+    showToast?.('机器码已解锁，请复制发送给开发者获取激活码');
   };
   // XBH_AI_PATCH_END
 
@@ -193,19 +196,30 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
         {/* 机器码 */}
         <div className={`mt-5 pt-5 border-t ${isVip ? 'border-amber-200' : isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
           <div className={`text-xs mb-1.5 ${isDark ? 'text-[#80868B]' : 'text-slate-500'}`}>本机机器码</div>
-          <div className="flex items-center gap-2">
-            <code className={`flex-1 px-3 py-2 rounded-lg font-mono text-xs break-all ${isDark ? 'bg-[#3E4145]/60 text-[#E8EAED]' : 'bg-slate-50 text-slate-700'}`}>
-              {vipStatus.machineId || '获取中…'}
-            </code>
+          {/* XBH_AI_PATCH: 非会员默认隐藏机器码，支付完成后解锁 */}
+          {machineIdUnlocked ? (
+            <div className="flex items-center gap-2">
+              <code className={`flex-1 px-3 py-2 rounded-lg font-mono text-xs break-all ${isDark ? 'bg-[#3E4145]/60 text-[#E8EAED]' : 'bg-slate-50 text-slate-700'}`}>
+                {vipStatus.machineId || '获取中…'}
+              </code>
+              <button
+                onClick={copyMachineId}
+                disabled={!vipStatus.machineId}
+                className={`shrink-0 p-2.5 rounded-lg transition-colors disabled:opacity-50 ${isDark ? 'bg-[#3E4145] hover:bg-slate-600 text-[#E8EAED]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}`}
+                title="复制机器码"
+              >
+                {copied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+              </button>
+            </div>
+          ) : (
             <button
-              onClick={copyMachineId}
-              disabled={!vipStatus.machineId}
-              className={`shrink-0 p-2.5 rounded-lg transition-colors disabled:opacity-50 ${isDark ? 'bg-[#3E4145] hover:bg-slate-600 text-[#E8EAED]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}`}
-              title="复制机器码"
+              onClick={openPayWizard}
+              className={`w-full px-3 py-2.5 rounded-lg border-2 border-dashed transition-colors flex items-center justify-center gap-2 ${isDark ? 'border-[#3E4145] bg-[#3E4145]/30 hover:border-amber-500/40 hover:bg-amber-500/5' : 'border-slate-200 bg-slate-50 hover:border-amber-300 hover:bg-amber-50'}`}
             >
-              {copied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+              <Lock size={14} className="text-amber-400" />
+              <span className={`text-xs ${isDark ? 'text-[#80868B]' : 'text-slate-400'}`}>完成支付后解锁机器码</span>
             </button>
-          </div>
+          )}
         </div>
       </div>
 
