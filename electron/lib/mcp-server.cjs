@@ -13,6 +13,7 @@ const https = require('https');
 const ctx = require('./app-context.cjs');
 const logAnalyzer = require('./log-analyzer.cjs');
 const aiAnalyze = require('./ai-analyze.cjs');
+const vip = require('./vip.cjs');
 const { getAppVersion } = require('./version.cjs');
 const {
   AGNES_API_URL,
@@ -638,6 +639,11 @@ function register(ipcMain) {
 
   ipcMain.handle('mcp:start', async () => {
     try {
+      // XBH_AI_PATCH: VIP 校验 - 非会员拒绝启动 MCP
+      const status = vip.getStatus();
+      if (!status.activated) {
+        return { ok: false, running: false, error: 'VIP 会员专属功能，请先开通会员', code: 'vip_required' };
+      }
       if (!mcpServerInstance) initMcpServer();
       return { ok: true, running: true };
     } catch (e) {
