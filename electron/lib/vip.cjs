@@ -186,4 +186,13 @@ function preload() {
   return preloadMachineId();
 }
 
-module.exports = { register, getStatus, verifyToken, preload };
+module.exports = {
+  register,
+  getStatus,
+  // $XBH_AI_PATCH_START
+  // 供新增巡检模块使用异步会员状态，避免机器码缓存未就绪时误判为基础版
+  getStatusAsync: computeStatusAsync,
+  // $XBH_AI_PATCH_END
+  verifyToken,
+  preload
+};

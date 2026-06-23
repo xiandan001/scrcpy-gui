@@ -108,7 +108,7 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
       setCopied(true);
       showToast?.('机器码已复制');
       setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
+    } catch {
       showToast?.('复制失败');
     }
   };

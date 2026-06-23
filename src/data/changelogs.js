@@ -179,6 +179,16 @@ const CHANGELOGS = {
     items: [
       { type: 'fix', text: '修复终端执行含管道符的 adb shell 命令时报错乱码的问题（如 dumpsys window | grep）' }
     ]
+  },
+  '3.1.0': {
+    title: 'v3.1.0',
+    date: '2026-06-23',
+    items: [
+      { type: 'feature', text: '新增设备巡检：支持巡检报告与证据包导出' },
+      { type: 'feature', text: '新增巡检保存路径设置，可自定义报告和证据包导出目录' },
+      { type: 'improve', text: '优化设备巡检会员状态加载体验' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
   }
 };
 

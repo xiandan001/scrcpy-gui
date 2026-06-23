@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle, Crown, Lock } from 'lucide-react';
+import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle, Crown, Lock, ClipboardCheck } from 'lucide-react';
 import './index.css';
 import themes from './data/themes';
 import { getChangelog } from './data/changelogs';
@@ -38,6 +38,11 @@ function App() {
   const [screenshotPath, setScreenshotPath] = useState('');
   // 录屏保存路径
   const [screenRecordPath, setScreenRecordPath] = useState('');
+  // XBH_AI_PATCH_START
+  // 巡检报告与证据包保存路径
+  const [inspectionPath, setInspectionPath] = useState('');
+  const inspectionPathLoadedRef = useRef(false);
+  // XBH_AI_PATCH_END
   const [deviceNames, setDeviceNames] = useState({});
   const [expandedDeviceIds, setExpandedDeviceIds] = useState(new Set());
   const [apkInstallPaths, setApkInstallPaths] = useState({});
@@ -252,6 +257,19 @@ function App() {
       }
     };
     loadScreenRecordPath();
+    // XBH_AI_PATCH_START
+    // 加载巡检保存路径
+    const loadInspectionPath = async () => {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.loadInspectionPath();
+        if (result.success && result.data) {
+          setInspectionPath(result.data);
+        }
+        inspectionPathLoadedRef.current = true;
+      }
+    };
+    loadInspectionPath();
+    // XBH_AI_PATCH_END
     // XBH_AI_PATCH_END
     // 加载连接历史记录
     const loadConnectionHistory = async () => {
@@ -317,6 +335,17 @@ function App() {
     };
     saveScreenRecordPath();
   }, [screenRecordPath]);
+  // XBH_AI_PATCH_START
+  // 保存巡检路径变化时自动保存
+  useEffect(() => {
+    const saveInspectionPath = async () => {
+      if (window.electronAPI && inspectionPathLoadedRef.current) {
+        await window.electronAPI.saveInspectionPath(inspectionPath);
+      }
+    };
+    saveInspectionPath();
+  }, [inspectionPath]);
+  // XBH_AI_PATCH_END
   // 保存推送远程路径历史变化时自动持久化
   useEffect(() => {
     const savePushHistory = async () => {
@@ -844,7 +873,7 @@ function App() {
   const handleWifiConnect = async (e) => {
     e.preventDefault();
     if (!wifiIp.trim()) return;
-    
+
     setIsConnecting(true);
     try {
       if (window.electronAPI) {
@@ -1231,6 +1260,7 @@ function App() {
                     return (
                       <>
                         {visibleDevices.map(device => (
+                    /* $XBH_AI_PATCH_START 设备巡检报告与证据包导出会员门控 */
                     <DeviceCard
                       key={device.id}
                       device={device}
@@ -1281,7 +1311,12 @@ function App() {
                       sharedCommandHistory={terminalCommandHistory}
                       onSaveTerminalCommand={handleSaveTerminalCommand}
                       onClearTerminalHistory={handleClearTerminalHistory}
+                      vipStatus={vipStatus}
+                      inspectionPath={inspectionPath}
+                      onInspectionPathChange={setInspectionPath}
+                      onOpenMemberCenter={() => setActiveTab('member')}
                     />
+                    /* $XBH_AI_PATCH_END */
                   ))}
                   {/* XBH_AI_PATCH: 非会员锁定占位卡 */}
                   {lockedCount > 0 && (
@@ -1609,6 +1644,60 @@ function App() {
                 </div>
                 {/* XBH_AI_PATCH_END */}
 
+                {/* XBH_AI_PATCH_START */}
+                {/* 巡检保存路径设置 */}
+                <div className={`py-3 border-b ${t.primary === 'tech' ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <ClipboardCheck size={16} className={t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'} />
+                    <span className={`font-medium ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-700'}`}>巡检保存路径</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={inspectionPath}
+                      onChange={(e) => setInspectionPath(e.target.value)}
+                      placeholder="默认: %APPDATA%/scrcpy-gui/inspection/"
+                      className={`flex-1 border text-sm rounded-lg p-2.5 ${t.primary === 'tech' ? 'bg-[#3E4145] border-[#5F6368] text-[#E8EAED]' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                    />
+                    <button
+                      onClick={async () => {
+                        if (window.electronAPI) {
+                          const result = await window.electronAPI.selectFolder();
+                          if (result.success && result.path) {
+                            setInspectionPath(result.path);
+                          }
+                        }
+                      }}
+                      className={`px-3 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 ${t.primary === 'tech' ? 'bg-[#3E4145] hover:bg-slate-600 text-[#E8EAED] border border-[#5F6368]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'}`}
+                    >
+                      <FolderOpen size={16} />
+                      浏览
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (window.electronAPI) {
+                          let targetPath = inspectionPath;
+                          if (!targetPath) {
+                            const userDataResult = await window.electronAPI.getUserDataPath();
+                            targetPath = userDataResult.success ? `${userDataResult.path}/inspection` : '';
+                          }
+                          if (targetPath) {
+                            await window.electronAPI.openFolder(targetPath);
+                          }
+                        }
+                      }}
+                      className={`px-3 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 ${t.primary === 'tech' ? 'bg-[#3E4145] hover:bg-slate-600 text-[#E8EAED] border border-[#5F6368]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'}`}
+                    >
+                      <Folder size={16} />
+                      打开
+                    </button>
+                  </div>
+                  <p className={`text-xs mt-1.5 ${t.primary === 'tech' ? 'text-[#80868B]' : 'text-[#9AA0A6]'}`}>
+                    巡检报告和证据包将保存到此目录，默认为 %APPDATA%/scrcpy-gui/inspection/
+                  </p>
+                </div>
+                {/* XBH_AI_PATCH_END */}
+
                 {/* Theme Selection */}
                 <div className="py-3">
                   <div className="flex items-center justify-between mb-3">
@@ -1875,6 +1964,10 @@ function App() {
                           setCurrentTheme('default');
                           setScreenshotPath('');
                           setScreenRecordPath('');
+                          // XBH_AI_PATCH_START
+                          // 重置巡检保存路径
+                          setInspectionPath('');
+                          // XBH_AI_PATCH_END
                           setScrcpySettings({
                             screenOff: false,
                             stayAwake: true,
@@ -1888,6 +1981,10 @@ function App() {
                             await window.electronAPI.saveCustomThemes([]);
                             await window.electronAPI.saveScreenshotPath('');
                             await window.electronAPI.saveScreenRecordPath('');
+                            // XBH_AI_PATCH_START
+                            // 同步清空巡检保存路径
+                            await window.electronAPI.saveInspectionPath('');
+                            // XBH_AI_PATCH_END
                           }
                           showToast('所有设置已重置为默认值');
                         });
