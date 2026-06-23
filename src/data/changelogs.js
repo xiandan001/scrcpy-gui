@@ -139,6 +139,14 @@ const CHANGELOGS = {
       { type: 'feature', text: '会员版解锁：不限设备/历史、AI 分析、自然语言搜索、MCP 服务' },
       { type: 'improve', text: '多点 fail-closed 校验，永不信任单独布尔标志，提升防破解强度' }
     ]
+  },
+  '3.0.1': {
+    title: 'v3.0.1',
+    date: '2026-06-22',
+    items: [
+      { type: 'fix', text: '修复已激活会员仍显示"完成支付后解锁机器码"的问题' },
+      { type: 'improve', text: '会员状态异步加载时自动同步机器码解锁状态' }
+    ]
   }
 };
 
