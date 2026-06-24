@@ -13,6 +13,7 @@ const performanceMonitor = require('./performance-monitor.cjs');
 const BUNDLED_ADB_PATH = path.join(__dirname, '../../scrcpy-win64/adb.exe');
 const SCRIPTS_FILE = 'task-center-scripts.json';
 const HISTORY_FILE = 'task-center-history.json';
+const SETTINGS_FILE = 'settings.json';
 const ARTIFACT_DIR = 'task-center-artifacts';
 const DEFAULT_TIMEOUT_MS = 30000;
 const LONG_TIMEOUT_MS = 120000;
@@ -81,11 +82,11 @@ function register(ipcMain) {
       const task = createTask(script, devices, event.sender, args || {});
       activeTasks.set(task.id, task);
       broadcastState();
-      runTask(task).catch(error => {
+      runTask(task).catch(async error => {
         task.status = 'failed';
         task.error = error.message;
         task.endedAt = new Date().toISOString();
-        finishTask(task);
+        await finishTask(task);
       });
       return { ok: true, task: publicTask(task) };
     } catch (error) {
@@ -126,6 +127,7 @@ function register(ipcMain) {
 async function runTask(task) {
   task.status = 'running';
   task.startedAt = new Date().toISOString();
+  await ensureTaskRootDir(task);
   appendTaskLog(task, '任务开始');
   broadcastTask(task);
 
@@ -152,7 +154,7 @@ async function runTask(task) {
   }
   task.endedAt = new Date().toISOString();
   appendTaskLog(task, task.status === 'success' ? '任务完成' : task.status === 'cancelled' ? '任务已取消' : '任务存在失败项');
-  finishTask(task);
+  await finishTask(task);
 }
 
 async function runDevice(task, run) {
@@ -287,7 +289,7 @@ async function captureInspectionSummary(task, deviceId, step) {
   if (!status.activated) {
     return { ok: false, error: '设备巡检为会员专属功能，请先开通会员', code: 'vip_required' };
   }
-  const outputBaseDir = String(step.outputBaseDir || '').trim() || await ensureTaskArtifactDir(task, 'inspection');
+  const outputBaseDir = await ensureTaskArtifactDir(task, 'inspection');
   const inspectionTask = createLinkedInspectionTask(task, deviceId);
   const result = await inspection.runInspection(inspectionTask, {
     deviceId,
@@ -389,6 +391,9 @@ function createTask(script, deviceIds, sender, args) {
     cancelled: false,
     error: '',
     currentProc: null,
+    artifactBaseDir: resolveTaskArtifactBaseDir(args.outputBaseDir),
+    artifactDir: '',
+    artifactWorkDir: '',
     continueOnError: args.continueOnError ?? script.continueOnError ?? true,
     concurrency: args.concurrency || 1,
     completedSteps: 0,
@@ -405,8 +410,14 @@ function createTask(script, deviceIds, sender, args) {
   };
 }
 
-function finishTask(task) {
+async function finishTask(task) {
   killCurrentProcess(task);
+  try {
+    await finalizeTaskArtifactDir(task);
+  } catch (error) {
+    task.error = task.error || error.message;
+    appendTaskLog(task, `产物目录整理失败：${error.message}`);
+  }
   activeTasks.delete(task.id);
   const record = publicTask(task);
   const history = [record, ...readHistory().filter(item => item.id !== task.id)].slice(0, MAX_HISTORY);
@@ -426,6 +437,8 @@ function publicTask(task) {
     error: task.error || '',
     continueOnError: task.continueOnError,
     concurrency: task.concurrency,
+    artifactDir: task.artifactDir || '',
+    artifactBaseDir: task.artifactBaseDir || '',
     completedSteps: task.completedSteps,
     failedSteps: task.failedSteps,
     totalSteps: task.totalSteps,
@@ -529,9 +542,81 @@ function writeJson(filePath, data) {
 }
 
 async function ensureTaskArtifactDir(task, subDir) {
-  const dir = path.join(app.getPath('userData'), ARTIFACT_DIR, task.id, subDir);
+  const rootDir = await ensureTaskRootDir(task);
+  const dir = path.join(rootDir, subDir);
   await fs.promises.mkdir(dir, { recursive: true });
   return dir;
+}
+
+async function ensureTaskRootDir(task) {
+  if (!task.artifactWorkDir) {
+    const baseDir = task.artifactBaseDir || resolveTaskArtifactBaseDir('');
+    task.artifactBaseDir = baseDir;
+    task.artifactWorkDir = path.join(baseDir, `_running-${task.id}`);
+    task.artifactDir = task.artifactWorkDir;
+  }
+  await fs.promises.mkdir(task.artifactWorkDir, { recursive: true });
+  return task.artifactWorkDir;
+}
+
+async function finalizeTaskArtifactDir(task) {
+  const workDir = task.artifactWorkDir;
+  if (!workDir) return;
+  await fs.promises.mkdir(task.artifactBaseDir || resolveTaskArtifactBaseDir(''), { recursive: true });
+  const endedAt = task.endedAt ? new Date(task.endedAt) : new Date();
+  const finalName = `${sanitizeName(task.scriptName || 'task')}-${formatStamp(endedAt)}`;
+  const finalDir = await uniqueDirPath(task.artifactBaseDir || resolveTaskArtifactBaseDir(''), finalName);
+  try {
+    await fs.promises.rename(workDir, finalDir);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await fs.promises.mkdir(finalDir, { recursive: true });
+  }
+  rebaseTaskArtifactPaths(task, workDir, finalDir);
+  task.artifactDir = finalDir;
+  task.artifactWorkDir = '';
+}
+
+async function uniqueDirPath(baseDir, name) {
+  let candidate = path.join(baseDir, name);
+  let index = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(baseDir, `${name}-${index}`);
+    index += 1;
+  }
+  return candidate;
+}
+
+function rebaseTaskArtifactPaths(task, fromDir, toDir) {
+  const from = path.resolve(fromDir);
+  const replacePath = (value) => {
+    const text = String(value || '');
+    return text ? text.split(from).join(toDir) : text;
+  };
+  for (const run of task.deviceRuns || []) {
+    for (const step of run.steps || []) {
+      step.artifact = replacePath(step.artifact);
+      step.output = replacePath(step.output);
+    }
+  }
+}
+
+function resolveTaskArtifactBaseDir(outputBaseDir) {
+  const explicit = String(outputBaseDir || '').trim();
+  if (explicit) return path.resolve(explicit);
+  const configured = readTaskCenterPath();
+  return configured || path.join(app.getPath('userData'), ARTIFACT_DIR);
+}
+
+function readTaskCenterPath() {
+  try {
+    const settingsFilePath = getDataPath(SETTINGS_FILE);
+    if (!fs.existsSync(settingsFilePath)) return '';
+    const settings = JSON.parse(fs.readFileSync(settingsFilePath, 'utf8'));
+    return String(settings.taskCenterPath || '').trim();
+  } catch {
+    return '';
+  }
 }
 
 function getDataPath(fileName) {

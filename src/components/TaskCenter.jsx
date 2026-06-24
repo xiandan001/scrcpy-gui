@@ -10,6 +10,7 @@ import {
   ChevronDown,
   Clock3,
   ClipboardList,
+  FolderOpen,
   Gauge,
   Loader2,
   Package,
@@ -36,7 +37,7 @@ const STEP_TYPES = [
   { value: 'delay', label: '等待', description: '等待指定毫秒数', icon: Clock3 }
 ];
 
-function TaskCenter({ devices, theme, showToast }) {
+function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const t = theme;
   const isDark = t.primary === 'tech';
   const onlineDevices = useMemo(() => devices.filter(device => device.status === 'device'), [devices]);
@@ -150,6 +151,7 @@ function TaskCenter({ devices, theme, showToast }) {
     const res = await window.electronAPI?.taskRun?.({
       script: draft,
       deviceIds: selectedDeviceIds,
+      outputBaseDir: taskCenterPath,
       continueOnError: draft.continueOnError,
       concurrency: 1
     });
@@ -379,6 +381,7 @@ function TaskCenter({ devices, theme, showToast }) {
             empty="当前没有运行中的任务"
             theme={t}
             onCancel={cancelTask}
+            onOpenPath={(targetPath) => window.electronAPI?.openFolder?.(targetPath)}
           />
           <TaskList
             title="运行历史"
@@ -386,6 +389,7 @@ function TaskCenter({ devices, theme, showToast }) {
             empty="暂无运行历史"
             theme={t}
             onClear={history.length > 0 ? clearHistory : null}
+            onOpenPath={(targetPath) => window.electronAPI?.openFolder?.(targetPath)}
           />
         </section>
       </div>
@@ -610,7 +614,6 @@ function renderStepFields(step, onChange, isDark) {
   if (step.type === 'inspection') {
     return (
       <>
-        <TextField label="输出目录（可选）" value={step.outputBaseDir || ''} onChange={(value) => onChange({ outputBaseDir: value })} placeholder="留空则保存到任务产物目录" isDark={isDark} />
         <label className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm ${isDark ? 'border-[#5F6368] bg-[#2D2F33]' : 'border-slate-200 bg-white'}`}>
           <span className={isDark ? 'text-[#E8EAED]' : 'text-slate-700'}>包含 bugreport</span>
           <input
@@ -651,7 +654,7 @@ function renderStepFields(step, onChange, isDark) {
   );
 }
 
-function TaskList({ title, tasks, empty, theme, onCancel, onClear }) {
+function TaskList({ title, tasks, empty, theme, onCancel, onClear, onOpenPath }) {
   const isDark = theme.primary === 'tech';
   const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
   const text = isDark ? 'text-[#E8EAED]' : 'text-slate-800';
@@ -665,14 +668,14 @@ function TaskList({ title, tasks, empty, theme, onCancel, onClear }) {
         {tasks.length === 0 ? (
           <div className={`py-10 text-center text-sm ${muted}`}>{empty}</div>
         ) : tasks.map(task => (
-          <TaskCard key={task.id} task={task} theme={theme} onCancel={onCancel} />
+          <TaskCard key={task.id} task={task} theme={theme} onCancel={onCancel} onOpenPath={onOpenPath} />
         ))}
       </div>
     </div>
   );
 }
 
-function TaskCard({ task, theme, onCancel }) {
+function TaskCard({ task, theme, onCancel, onOpenPath }) {
   const isDark = theme.primary === 'tech';
   const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
   const text = isDark ? 'text-[#E8EAED]' : 'text-slate-800';
@@ -691,21 +694,35 @@ function TaskCard({ task, theme, onCancel }) {
         <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
       </div>
       <div className={`mt-2 text-xs ${muted}`}>完成 {task.completedSteps || 0}，失败 {task.failedSteps || 0}，总计 {task.totalSteps || 0}</div>
-      <div className="mt-3 space-y-2">
-        {(task.deviceRuns || []).map(run => (
-          <div key={run.deviceId} className={`rounded border px-2 py-1.5 ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
-            <div className="flex items-center justify-between gap-2">
-              <span className={`text-xs font-mono truncate ${text}`}>{run.deviceId}</span>
-              <StatusPill status={run.status} compact />
-            </div>
-            {(run.steps || []).slice(-2).map(step => (
-              <div key={`${step.id}-${step.index}`} className={`text-[11px] mt-1 truncate ${step.status === 'failed' ? 'text-red-400' : muted}`}>
-                {step.label}{step.error ? `：${step.error}` : step.artifact ? `：${step.artifact}` : ''}
+      {task.artifactDir && (
+        <div className={`mt-2 rounded border px-2 py-2 ${isDark ? 'border-[#3E4145] bg-[#2D2F33]' : 'border-slate-200 bg-white'}`}>
+          <div className={`text-[11px] truncate ${muted}`}>{task.artifactDir}</div>
+          <button
+            onClick={() => onOpenPath?.(task.artifactDir)}
+            className={`mt-2 w-full px-2 py-1.5 rounded-lg border text-xs flex items-center justify-center gap-1.5 ${theme.button.secondary}`}
+          >
+            <FolderOpen size={12} />
+            打开目录
+          </button>
+        </div>
+      )}
+      {running && (
+        <div className="mt-3 space-y-2">
+          {(task.deviceRuns || []).map(run => (
+            <div key={run.deviceId} className={`rounded border px-2 py-1.5 ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+              <div className="flex items-center justify-between gap-2">
+                <span className={`text-xs font-mono truncate ${text}`}>{run.deviceId}</span>
+                <StatusPill status={run.status} compact />
               </div>
-            ))}
-          </div>
-        ))}
-      </div>
+              {(run.steps || []).slice(-2).map(step => (
+                <div key={`${step.id}-${step.index}`} className={`text-[11px] mt-1 truncate ${step.status === 'failed' ? 'text-red-400' : muted}`}>
+                  {step.label}{step.error ? `：${step.error}` : step.artifact ? `：${step.artifact}` : ''}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
       {running && onCancel && (
         <button onClick={() => onCancel(task.id)} className="mt-3 w-full px-3 py-2 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 flex items-center justify-center gap-2">
           <Square size={13} />

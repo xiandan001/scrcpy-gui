@@ -55,6 +55,9 @@ function App() {
   // 性能导出与分析报告保存路径
   const [performancePath, setPerformancePath] = useState('');
   const performancePathLoadedRef = useRef(false);
+  // 任务中心产物保存路径
+  const [taskCenterPath, setTaskCenterPath] = useState('');
+  const taskCenterPathLoadedRef = useRef(false);
   const [backgroundTasks, setBackgroundTasks] = useState({ inspection: null, performanceReport: null });
   const backgroundTaskHideTimersRef = useRef({});
   const [deviceNames, setDeviceNames] = useState({});
@@ -304,6 +307,17 @@ function App() {
       }
     };
     loadPerformancePath();
+    // 加载任务中心保存路径
+    const loadTaskCenterPath = async () => {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.loadTaskCenterPath();
+        if (result.success && result.data) {
+          setTaskCenterPath(result.data);
+        }
+        taskCenterPathLoadedRef.current = true;
+      }
+    };
+    loadTaskCenterPath();
     // 加载连接历史记录
     const loadConnectionHistory = async () => {
       if (window.electronAPI) {
@@ -383,6 +397,15 @@ function App() {
     };
     savePerformancePath();
   }, [performancePath]);
+  // 保存任务中心路径变化时自动保存
+  useEffect(() => {
+    const saveTaskCenterPath = async () => {
+      if (window.electronAPI && taskCenterPathLoadedRef.current) {
+        await window.electronAPI.saveTaskCenterPath(taskCenterPath);
+      }
+    };
+    saveTaskCenterPath();
+  }, [taskCenterPath]);
 
   useEffect(() => {
     const hideLater = (key, task) => {
@@ -1563,6 +1586,7 @@ function App() {
             <TaskCenter
               devices={devices}
               theme={theme}
+              taskCenterPath={taskCenterPath}
               showToast={showToast}
             />
           )}
@@ -1872,6 +1896,59 @@ function App() {
                   </p>
                 </div>
 
+                {/* 任务中心保存路径设置 */}
+                <div className={`py-3 border-b ${t.primary === 'tech' ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <ClipboardList size={16} className={t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'} />
+                    <span className={`font-medium ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-700'}`}>任务中心保存路径</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={taskCenterPath}
+                      onChange={(e) => setTaskCenterPath(e.target.value)}
+                      placeholder="默认: %APPDATA%/scrcpy-gui/task-center-artifacts/"
+                      className={`flex-1 border text-sm rounded-lg p-2.5 ${t.primary === 'tech' ? 'bg-[#3E4145] border-[#5F6368] text-[#E8EAED]' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                    />
+                    <button
+                      onClick={async () => {
+                        if (window.electronAPI) {
+                          const result = await window.electronAPI.selectFolder();
+                          if (result.success && result.path) {
+                            setTaskCenterPath(result.path);
+                          }
+                        }
+                      }}
+                      className={`px-3 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 ${t.primary === 'tech' ? 'bg-[#3E4145] hover:bg-slate-600 text-[#E8EAED] border border-[#5F6368]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'}`}
+                    >
+                      <FolderOpen size={16} />
+                      浏览
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (window.electronAPI) {
+                          let targetPath = taskCenterPath;
+                          if (!targetPath) {
+                            const userDataResult = await window.electronAPI.getUserDataPath();
+                            targetPath = userDataResult.success ? `${userDataResult.path}/task-center-artifacts` : '';
+                          }
+                          if (targetPath) {
+                            await window.electronAPI.ensureFolder(targetPath);
+                            await window.electronAPI.openFolder(targetPath);
+                          }
+                        }
+                      }}
+                      className={`px-3 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 ${t.primary === 'tech' ? 'bg-[#3E4145] hover:bg-slate-600 text-[#E8EAED] border border-[#5F6368]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'}`}
+                    >
+                      <Folder size={16} />
+                      打开
+                    </button>
+                  </div>
+                  <p className={`text-xs mt-1.5 ${t.primary === 'tech' ? 'text-[#80868B]' : 'text-[#9AA0A6]'}`}>
+                    每次任务执行完成后，会在此目录下生成“脚本名-执行完成时间”的独立文件夹。
+                  </p>
+                </div>
+
                 {/* Theme Selection */}
                 <div className="py-3">
                   <div className="flex items-center justify-between mb-3">
@@ -2138,6 +2215,7 @@ function App() {
                           // 重置巡检保存路径
                           setInspectionPath('');
                           setPerformancePath('');
+                          setTaskCenterPath('');
                           setScrcpySettings({
                             screenOff: false,
                             stayAwake: true,
@@ -2154,6 +2232,7 @@ function App() {
                             // 同步清空巡检保存路径
                             await window.electronAPI.saveInspectionPath('');
                             await window.electronAPI.savePerformancePath('');
+                            await window.electronAPI.saveTaskCenterPath('');
                           }
                           showToast('所有设置已重置为默认值');
                         });
