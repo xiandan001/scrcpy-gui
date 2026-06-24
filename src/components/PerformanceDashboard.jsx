@@ -1,91 +1,124 @@
-// $XBH_AI_PATCH_START
 // 性能监控面板：设备指标实时采样、曲线、阈值、告警和会员导出。
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Cpu, Database, Download, Gauge, Lock, Play, RefreshCw, Save, Smartphone, Square, Thermometer, Zap } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal, flushSync } from 'react-dom';
+import { Activity, AlertTriangle, Check, ChevronDown, Cpu, Database, Download, FileText, FolderOpen, Gauge, Lock, Play, RefreshCw, Save, Smartphone, Square, Thermometer, Zap } from 'lucide-react';
 
 const METRICS = [
   { key: 'cpu', label: 'CPU', color: '#22c55e' },
   { key: 'memory', label: '内存', color: '#38bdf8' },
-  { key: 'data', label: '/data', color: '#f59e0b' },
+  { key: 'data', label: '存储空间', color: '#f59e0b' },
   { key: 'temp', label: '温度', color: '#ef4444' },
-  // $XBH_AI_PATCH_START
   // FPS 趋势：前台应用渲染帧率与 SurfaceFlinger 合成帧率。
   { key: 'foregroundFps', label: '前台FPS', color: '#a78bfa', max: 120 },
   { key: 'surfaceFps', label: '合成FPS', color: '#14b8a6', max: 120 }
-  // $XBH_AI_PATCH_END
 ];
 
-function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemberCenter }) {
+const INTERVAL_OPTIONS = [
+  { value: 1000, label: '1 秒', description: '高频采样' },
+  { value: 3000, label: '3 秒', description: '更及时' },
+  { value: 5000, label: '5 秒', description: '均衡' },
+  { value: 10000, label: '10 秒', description: '低负载' }
+];
+
+function PerformanceDashboard({ devices, theme, vipStatus, performancePath, showToast, onOpenMemberCenter, onRefreshVipStatus }) {
   const t = theme;
   const isDark = t.primary === 'tech';
-  const isVip = vipStatus?.activated === true;
+  const isVip = vipStatus?.activated === true || vipStatus?.reason === 'loading';
   const onlineDevices = useMemo(() => devices.filter(device => device.status === 'device'), [devices]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [running, setRunning] = useState(false);
-  // $XBH_AI_PATCH_START
   // 默认 3 秒采样，让面板数值变化更及时。
   const [intervalMs, setIntervalMs] = useState(3000);
-  // $XBH_AI_PATCH_END
   const [snapshot, setSnapshot] = useState(null);
   const [history, setHistory] = useState([]);
   const [thresholds, setThresholds] = useState({ cpu: 85, memory: 85, batteryTemp: 45, dataUsed: 90 });
   const [loading, setLoading] = useState(false);
   const [savingThresholds, setSavingThresholds] = useState(false);
-  // $XBH_AI_PATCH_START
-  // 记录后端实际运行中的监控设备，切换页面/设备时用于停止后台采样。
+  const [includeAiSummary, setIncludeAiSummary] = useState(true);
+  const [lastExportPath, setLastExportPath] = useState('');
+  const [lastReportPath, setLastReportPath] = useState('');
+  const [lastReportAiSummary, setLastReportAiSummary] = useState(null);
+  const [reportTask, setReportTask] = useState(null);
+  // 记录当前视图对应的后端运行设备；停止采样只由用户显式触发。
   const runningDeviceRef = useRef('');
-  // $XBH_AI_PATCH_END
+  const selectedDeviceIdRef = useRef('');
+  const stateRequestSeqRef = useRef(0);
+  const lastUiUpdateRef = useRef(0);
+  const pendingUpdateRef = useRef(null);
+  const uiUpdateTimerRef = useRef(null);
 
   const selectedDevice = onlineDevices.find(device => device.id === selectedDeviceId);
+  const deviceOptions = useMemo(() => {
+    if (onlineDevices.length === 0) {
+      return [{ value: '', label: '暂无在线设备', description: '请先连接设备', disabled: true, icon: Smartphone }];
+    }
+    return onlineDevices.map(device => ({
+      value: device.id,
+      label: device.name || device.id,
+      description: device.name && device.name !== device.id ? device.id : '在线设备',
+      icon: Smartphone
+    }));
+  }, [onlineDevices]);
+  const intervalOptions = useMemo(() => INTERVAL_OPTIONS.map(option => ({
+    ...option,
+    description: option.value < 5000 && !isVip ? `${option.description} · 会员` : option.description
+  })), [isVip]);
   const chartPoints = useMemo(() => history.slice(-80).map(item => ({
     timestamp: item.timestamp,
     cpu: item.cpu?.usage,
     memory: item.memory?.usage,
     data: getDataDisk(item)?.usage,
     temp: getDeviceTemperature(item),
-    // $XBH_AI_PATCH_START
     foregroundFps: item.fps?.foreground?.fps,
     surfaceFps: item.fps?.surfaceFlinger?.fps
-    // $XBH_AI_PATCH_END
   })), [history]);
   const dataDisk = getDataDisk(snapshot);
   const deviceTemperature = getDeviceTemperature(snapshot);
-  // $XBH_AI_PATCH_START
   // 当前 FPS 指标快照。
   const foregroundFps = snapshot?.fps?.foreground;
   const surfaceFlingerFps = snapshot?.fps?.surfaceFlinger;
-  // $XBH_AI_PATCH_END
+
+  const applyPerformanceSnapshot = useCallback((nextSnapshot) => {
+    setSnapshot(nextSnapshot);
+    setHistory(prev => [...prev, nextSnapshot].slice(-720));
+  }, []);
+
+  const applyPerformanceState = useCallback((deviceId, res, options = {}) => {
+    if (!res?.ok) return;
+    const nextHistory = res.history || [];
+    const monitorRunning = res.monitor?.running === true;
+    setRunning(monitorRunning);
+    runningDeviceRef.current = monitorRunning ? deviceId : '';
+    if (res.monitor?.intervalMs) setIntervalMs(res.monitor.intervalMs);
+    if (options.replaceHistory !== false || nextHistory.length > 0) {
+      setHistory(nextHistory);
+      setSnapshot(nextHistory[nextHistory.length - 1] || null);
+    }
+  }, []);
+
+  const refreshPerformanceState = useCallback(async (deviceId, options = {}) => {
+    if (!deviceId || !window.electronAPI?.perfState) return;
+    const requestId = ++stateRequestSeqRef.current;
+    const res = await window.electronAPI.perfState({ deviceId });
+    if (requestId !== stateRequestSeqRef.current || selectedDeviceIdRef.current !== deviceId) return;
+    applyPerformanceState(deviceId, res, options);
+  }, [applyPerformanceState]);
+
+  useEffect(() => {
+    selectedDeviceIdRef.current = selectedDeviceId;
+  }, [selectedDeviceId]);
 
   useEffect(() => {
     if (!selectedDeviceId && onlineDevices.length > 0) setSelectedDeviceId(onlineDevices[0].id);
     if (selectedDeviceId && !onlineDevices.some(device => device.id === selectedDeviceId)) {
-      // $XBH_AI_PATCH_START
-      // $XBH_AI_PATCH_MODIFY: 设备离线时同步停止该设备的后台采样，避免 ADB 定时任务残留。
-      if (runningDeviceRef.current === selectedDeviceId) {
-        window.electronAPI?.perfStop?.({ deviceId: selectedDeviceId });
-        runningDeviceRef.current = '';
-      }
-      // $XBH_AI_PATCH_END
+      stateRequestSeqRef.current += 1;
       setSelectedDeviceId(onlineDevices[0]?.id || '');
       setRunning(false);
       setSnapshot(null);
       setHistory([]);
     }
   }, [onlineDevices, selectedDeviceId]);
-
-  // $XBH_AI_PATCH_START
-  // 离开性能监控页面时停止后台采样，避免 UI 已卸载但主进程仍持续调用 ADB。
-  useEffect(() => {
-    return () => {
-      const runningDeviceId = runningDeviceRef.current;
-      if (runningDeviceId) {
-        window.electronAPI?.perfStop?.({ deviceId: runningDeviceId });
-        runningDeviceRef.current = '';
-      }
-    };
-  }, []);
-  // $XBH_AI_PATCH_END
 
   useEffect(() => {
     window.electronAPI?.perfGetThresholds?.().then(res => {
@@ -94,13 +127,75 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
   }, []);
 
   useEffect(() => {
+    if (vipStatus?.reason === 'loading') onRefreshVipStatus?.();
+  }, [onRefreshVipStatus, vipStatus?.reason]);
+
+  useEffect(() => {
     if (!window.electronAPI?.onPerformanceUpdate) return undefined;
     return window.electronAPI.onPerformanceUpdate((event) => {
       if (event.deviceId !== selectedDeviceId || !event.ok) return;
-      setSnapshot(event.snapshot);
-      setHistory(prev => [...prev, event.snapshot].slice(-720));
+      const now = Date.now();
+      const elapsed = now - lastUiUpdateRef.current;
+      if (elapsed >= 900) {
+        lastUiUpdateRef.current = now;
+        applyPerformanceSnapshot(event.snapshot);
+        return;
+      }
+      pendingUpdateRef.current = event.snapshot;
+      if (!uiUpdateTimerRef.current) {
+        uiUpdateTimerRef.current = setTimeout(() => {
+          uiUpdateTimerRef.current = null;
+          if (!pendingUpdateRef.current) return;
+          lastUiUpdateRef.current = Date.now();
+          applyPerformanceSnapshot(pendingUpdateRef.current);
+          pendingUpdateRef.current = null;
+        }, 900 - elapsed);
+      }
     });
+  }, [applyPerformanceSnapshot, selectedDeviceId]);
+
+  useEffect(() => {
+    return () => {
+      if (uiUpdateTimerRef.current) clearTimeout(uiUpdateTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    refreshPerformanceState(selectedDeviceId);
+  }, [refreshPerformanceState, selectedDeviceId]);
+
+  const applyReportTask = useCallback((task) => {
+    if (!task || (selectedDeviceId && task.deviceId !== selectedDeviceId)) return;
+    setReportTask(task);
+    if (task.result?.ok) {
+      setLastReportPath(task.result.path || '');
+      setLastReportAiSummary(task.result.aiSummary || null);
+    }
   }, [selectedDeviceId]);
+
+  useEffect(() => {
+    if (!selectedDeviceId || !window.electronAPI?.perfReportState) return undefined;
+    let alive = true;
+    window.electronAPI.perfReportState({ deviceId: selectedDeviceId }).then((res) => {
+      if (!alive || !res?.ok) return;
+      if (res.task) applyReportTask(res.task);
+    });
+    return () => { alive = false; };
+  }, [applyReportTask, selectedDeviceId]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onPerfReportProgress || !window.electronAPI?.onPerfReportDone) return undefined;
+    const offProgress = window.electronAPI.onPerfReportProgress((task) => {
+      applyReportTask(task);
+    });
+    const offDone = window.electronAPI.onPerfReportDone((task) => {
+      applyReportTask(task);
+    });
+    return () => {
+      offProgress?.();
+      offDone?.();
+    };
+  }, [applyReportTask]);
 
   const requireVip = (featureName) => {
     if (isVip) return true;
@@ -110,66 +205,66 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
   };
 
   const startMonitor = async () => {
-    if (!selectedDeviceId) return;
+    const targetDeviceId = selectedDeviceId;
+    if (!targetDeviceId) return;
+    stateRequestSeqRef.current += 1;
     setLoading(true);
     try {
-      // $XBH_AI_PATCH_START
-      // $XBH_AI_PATCH_MODIFY: 若旧设备仍在监控，先停止旧采样，保证后台只有当前设备任务。
-      if (runningDeviceRef.current && runningDeviceRef.current !== selectedDeviceId) {
-        await window.electronAPI?.perfStop?.({ deviceId: runningDeviceRef.current });
-        runningDeviceRef.current = '';
-      }
-      // $XBH_AI_PATCH_END
       const res = await window.electronAPI.perfStart({
-        deviceId: selectedDeviceId,
+        deviceId: targetDeviceId,
         intervalMs,
         includeProcesses: isVip
       });
       if (res.ok) {
-        setRunning(true);
-        // $XBH_AI_PATCH_START
-        runningDeviceRef.current = selectedDeviceId;
-        // $XBH_AI_PATCH_END
-        setIntervalMs(res.intervalMs);
+        flushSync(() => {
+          setRunning(true);
+          if (res.intervalMs) setIntervalMs(res.intervalMs);
+        });
+        runningDeviceRef.current = targetDeviceId;
+        refreshPerformanceState(targetDeviceId, { replaceHistory: false });
         showToast?.('性能监控已启动');
       } else {
         showToast?.(`启动失败：${res.error || '未知错误'}`);
       }
+    } catch (error) {
+      showToast?.(`启动失败：${error.message || '未知错误'}`);
     } finally {
       setLoading(false);
     }
   };
 
   const stopMonitor = async () => {
-    // $XBH_AI_PATCH_START
-    // $XBH_AI_PATCH_MODIFY: 优先停止真实运行中的设备，避免切换选择后停错对象。
-    const targetDeviceId = runningDeviceRef.current || selectedDeviceId;
+    const targetDeviceId = selectedDeviceId;
     if (!targetDeviceId) return;
-    const res = await window.electronAPI.perfStop({ deviceId: targetDeviceId });
-    // $XBH_AI_PATCH_END
-    if (res.ok) {
-      setRunning(false);
-      // $XBH_AI_PATCH_START
-      if (runningDeviceRef.current === targetDeviceId) runningDeviceRef.current = '';
-      // $XBH_AI_PATCH_END
-      showToast?.('性能监控已停止');
+    stateRequestSeqRef.current += 1;
+    setLoading(true);
+    try {
+      const res = await window.electronAPI.perfStop({ deviceId: targetDeviceId });
+      if (res.ok) {
+        flushSync(() => setRunning(false));
+        if (runningDeviceRef.current === targetDeviceId) runningDeviceRef.current = '';
+        refreshPerformanceState(targetDeviceId, { replaceHistory: false });
+        showToast?.('性能监控已停止');
+      } else {
+        showToast?.(`停止失败：${res.error || '未知错误'}`);
+        refreshPerformanceState(targetDeviceId, { replaceHistory: false });
+      }
+    } catch (error) {
+      showToast?.(`停止失败：${error.message || '未知错误'}`);
+      refreshPerformanceState(targetDeviceId, { replaceHistory: false });
+    } finally {
+      setLoading(false);
     }
   };
 
-  // $XBH_AI_PATCH_START
-  // 设备切换时停止旧设备采样，并重置当前视图数据，避免后台和界面状态错位。
+  // 切换设备只切换当前视图，已启动的采样任务继续留在后台运行。
   const switchDevice = async (nextDeviceId) => {
-    const runningDeviceId = runningDeviceRef.current;
-    if (runningDeviceId && runningDeviceId !== nextDeviceId) {
-      await window.electronAPI?.perfStop?.({ deviceId: runningDeviceId });
-      runningDeviceRef.current = '';
-    }
+    stateRequestSeqRef.current += 1;
     setSelectedDeviceId(nextDeviceId);
     setSnapshot(null);
     setHistory([]);
     setRunning(false);
   };
-  // $XBH_AI_PATCH_END
 
   const takeSnapshot = async () => {
     if (!selectedDeviceId) return;
@@ -189,9 +284,39 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
 
   const exportHistory = async () => {
     if (!requireVip('性能数据导出')) return;
-    const res = await window.electronAPI.perfExport({ deviceId: selectedDeviceId });
-    if (res.ok) showToast?.(`已导出：${res.path}`);
+    const res = await window.electronAPI.perfExport({ deviceId: selectedDeviceId, outputBaseDir: performancePath || undefined });
+    if (res.ok) {
+      setLastExportPath(res.path || '');
+      showToast?.(`已导出：${res.path}`);
+    }
     else showToast?.(`导出失败：${res.error || '未知错误'}`);
+  };
+
+  const exportReport = async () => {
+    if (!requireVip('性能分析报告')) return;
+    try {
+      const res = await window.electronAPI.perfReport({ deviceId: selectedDeviceId, outputBaseDir: performancePath || undefined, includeAiSummary });
+      if (res.ok) {
+        if (res.task) setReportTask(res.task);
+        showToast?.('性能报告已在后台生成');
+      }
+      else showToast?.(`报告生成失败：${res.error || '未知错误'}`);
+    } catch (e) {
+      showToast?.(`报告生成失败：${e.message || '未知错误'}`);
+    }
+  };
+
+  const openPerformanceDir = async (targetPath) => {
+    const folder = getFolderFromPath(targetPath) || performancePath || await getDefaultPerformanceDir();
+    if (!folder) return;
+    await window.electronAPI?.ensureFolder?.(folder);
+    const res = await window.electronAPI?.openFolder?.(folder);
+    if (res && !res.success && !res.ok) showToast?.(`打开目录失败：${res.error || '未知错误'}`);
+  };
+
+  const getDefaultPerformanceDir = async () => {
+    const res = await window.electronAPI?.getUserDataPath?.();
+    return res?.success ? `${res.path}/performance-monitor` : '';
   };
 
   const saveThresholds = async () => {
@@ -212,6 +337,7 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
 
   const panelClass = isDark ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200';
   const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
+  const reportActive = reportTask?.status === 'running';
 
   return (
     <div className="space-y-6">
@@ -225,35 +351,29 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
             <div className={`text-sm mt-1 ${muted}`}>{selectedDevice?.name || selectedDevice?.id || '未选择设备'}</div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <select
+            <CustomSelect
               value={selectedDeviceId}
-              onChange={(e) => switchDevice(e.target.value)}
-              className={`px-3 py-2 rounded-lg border text-sm min-w-64 ${isDark ? 'bg-[#2D2F33] border-[#5F6368] text-[#E8EAED]' : 'bg-white border-slate-200 text-slate-700'}`}
-            >
-              {onlineDevices.length === 0 ? <option value="">暂无在线设备</option> : onlineDevices.map(device => (
-                <option key={device.id} value={device.id}>{device.name || device.id}</option>
-              ))}
-            </select>
-            <select
+              options={deviceOptions}
+              onChange={switchDevice}
+              isDark={isDark}
+              className="w-72 max-w-full"
+            />
+            <CustomSelect
               value={intervalMs}
-              onChange={(e) => {
-                const value = Number(e.target.value);
+              options={intervalOptions}
+              onChange={(value) => {
                 if (value < 5000 && !isVip) {
                   requireVip('高频采样');
                   return;
                 }
                 setIntervalMs(value);
               }}
-              className={`px-3 py-2 rounded-lg border text-sm ${isDark ? 'bg-[#2D2F33] border-[#5F6368] text-[#E8EAED]' : 'bg-white border-slate-200 text-slate-700'}`}
-            >
-              <option value={1000}>1 秒</option>
-              <option value={3000}>3 秒</option>
-              <option value={5000}>5 秒</option>
-              <option value={10000}>10 秒</option>
-            </select>
+              isDark={isDark}
+              className="w-36"
+            />
             {running ? (
-              <button onClick={stopMonitor} className="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 flex items-center gap-2">
-                <Square size={16} />
+              <button onClick={stopMonitor} disabled={loading} className="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 flex items-center gap-2">
+                {loading ? <RefreshCw size={16} className="animate-spin" /> : <Square size={16} />}
                 停止
               </button>
             ) : (
@@ -270,7 +390,27 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
               {isVip ? <Download size={16} /> : <Lock size={16} />}
               导出
             </button>
+            <button onClick={exportReport} disabled={!selectedDeviceId || history.length === 0 || reportActive} className={`px-4 py-2 rounded-lg border flex items-center gap-2 disabled:opacity-50 ${isVip ? (isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100') : 'border-amber-500/30 text-amber-400 hover:bg-amber-500/10'}`}>
+              {isVip ? (reportActive ? <RefreshCw size={16} className="animate-spin" /> : <FileText size={16} />) : <Lock size={16} />}
+              {reportActive ? '生成中' : '报告'}
+            </button>
+            <button onClick={() => openPerformanceDir('')} className={`px-4 py-2 rounded-lg border flex items-center gap-2 ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+              <FolderOpen size={16} />
+              打开目录
+            </button>
           </div>
+        </div>
+        <div className={`mt-4 flex flex-col xl:flex-row xl:items-center gap-3 text-xs ${muted}`}>
+          <label className={`inline-flex items-center gap-2 w-fit rounded-lg border px-3 py-2 ${isDark ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
+            <input
+              type="checkbox"
+              checked={includeAiSummary}
+              onChange={(e) => setIncludeAiSummary(e.target.checked)}
+              className="h-4 w-4 accent-emerald-500"
+            />
+            报告包含 AI 分析
+          </label>
+          <div className="min-w-0 flex-1 truncate">保存目录：{performancePath || '默认 %APPDATA%/scrcpy-gui/performance-monitor/'}</div>
         </div>
       </div>
 
@@ -284,13 +424,11 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             <MetricCard icon={<Cpu size={20} />} label="CPU" value={formatPercent(snapshot?.cpu?.usage)} sub={running ? '实时' : '最近采样'} color="emerald" theme={t} />
             <MetricCard icon={<Activity size={20} />} label="内存" value={formatPercent(snapshot?.memory?.usage)} sub={formatKb(snapshot?.memory?.usedKb, snapshot?.memory?.totalKb)} color="sky" theme={t} />
-            <MetricCard icon={<Database size={20} />} label="/data" value={formatPercent(dataDisk?.usage)} sub={formatKb(dataDisk?.usedKb, dataDisk?.sizeKb)} color="amber" theme={t} />
+            <MetricCard icon={<Database size={20} />} label="存储空间" value={formatPercent(dataDisk?.usage)} sub={formatKb(dataDisk?.usedKb, dataDisk?.sizeKb)} color="amber" theme={t} />
             <MetricCard icon={<Thermometer size={20} />} label="温度" value={formatTemp(deviceTemperature)} sub={formatBatterySub(snapshot?.battery)} color="red" theme={t} />
-            {/* $XBH_AI_PATCH_START */}
             {/* 展示前台应用 FPS 与当前屏幕 SurfaceFlinger 合成 FPS。 */}
             <MetricCard icon={<Gauge size={20} />} label="前台 FPS" value={formatFps(foregroundFps?.fps)} sub={formatForegroundFpsSub(foregroundFps)} color="violet" theme={t} />
             <MetricCard icon={<Zap size={20} />} label="合成 FPS" value={formatFps(surfaceFlingerFps?.fps)} sub={formatSurfaceFpsSub(surfaceFlingerFps)} color="cyan" theme={t} />
-            {/* $XBH_AI_PATCH_END */}
           </div>
 
           {snapshot?.warnings?.length > 0 && (
@@ -298,6 +436,28 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
               <AlertTriangle size={18} className="mt-0.5" />
               <div className="flex flex-wrap gap-2 text-sm">
                 {snapshot.warnings.map(item => <span key={`${item.type}-${item.label}`} className="px-2 py-1 rounded bg-red-500/10">{item.label}</span>)}
+              </div>
+            </div>
+          )}
+
+          {(lastExportPath || lastReportPath) && (
+            <div className={`p-4 rounded-xl border shadow-sm ${panelClass}`}>
+              <div className="flex flex-col gap-2 text-sm">
+                {lastExportPath && (
+                  <PathRow label="最近导出" path={lastExportPath} isDark={isDark} onOpen={() => openPerformanceDir(lastExportPath)} />
+                )}
+                {lastReportPath && (
+                  <PathRow label="最近报告" path={lastReportPath} isDark={isDark} onOpen={() => openPerformanceDir(lastReportPath)} />
+                )}
+                {lastReportAiSummary && !lastReportAiSummary.skipped && (
+                  lastReportAiSummary.ok ? (
+                    <div className={`rounded-lg border px-3 py-2 text-xs ${isDark ? 'bg-[#202124] border-[#3E4145] text-[#9AA0A6]' : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                      AI 分析已写入最近报告
+                    </div>
+                  ) : (
+                    <div className="text-xs text-amber-500">AI 分析未生成：{lastReportAiSummary.error || '未知错误'}</div>
+                  )
+                )}
               </div>
             </div>
           )}
@@ -322,7 +482,7 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
                 <ThresholdInput label="CPU" value={thresholds.cpu} suffix="%" onChange={(value) => setThresholds(prev => ({ ...prev, cpu: value }))} isDark={isDark} />
                 <ThresholdInput label="内存" value={thresholds.memory} suffix="%" onChange={(value) => setThresholds(prev => ({ ...prev, memory: value }))} isDark={isDark} />
                 <ThresholdInput label="电池温度" value={thresholds.batteryTemp} suffix="°C" onChange={(value) => setThresholds(prev => ({ ...prev, batteryTemp: value }))} isDark={isDark} />
-                <ThresholdInput label="/data" value={thresholds.dataUsed} suffix="%" onChange={(value) => setThresholds(prev => ({ ...prev, dataUsed: value }))} isDark={isDark} />
+                <ThresholdInput label="存储空间" value={thresholds.dataUsed} suffix="%" onChange={(value) => setThresholds(prev => ({ ...prev, dataUsed: value }))} isDark={isDark} />
                 <button onClick={saveThresholds} disabled={savingThresholds} className="w-full px-4 py-2 rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 flex items-center justify-center gap-2">
                   {savingThresholds ? <RefreshCw size={16} className="animate-spin" /> : <Save size={16} />}
                   保存阈值
@@ -379,10 +539,8 @@ function MetricCard({ icon, label, value, sub, color, theme }) {
     sky: 'text-sky-400 bg-sky-500/10 border-sky-500/20',
     amber: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
     red: 'text-red-400 bg-red-500/10 border-red-500/20',
-    // $XBH_AI_PATCH_START
     violet: 'text-violet-400 bg-violet-500/10 border-violet-500/20',
     cyan: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20'
-    // $XBH_AI_PATCH_END
   }[color];
   return (
     <div className={`p-5 rounded-xl border shadow-sm ${isDark ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
@@ -396,14 +554,178 @@ function MetricCard({ icon, label, value, sub, color, theme }) {
   );
 }
 
+function PathRow({ label, path, isDark, onOpen }) {
+  return (
+    <div className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${isDark ? 'bg-[#202124] border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
+      <span className={`shrink-0 font-medium ${isDark ? 'text-[#E8EAED]' : 'text-slate-700'}`}>{label}</span>
+      <span className={`min-w-0 flex-1 truncate font-mono text-xs ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`} title={path}>{path}</span>
+      <button
+        type="button"
+        onClick={onOpen}
+        className={`shrink-0 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100'}`}
+      >
+        打开
+      </button>
+    </div>
+  );
+}
+
+function CustomSelect({ value, options, onChange, isDark, className = '' }) {
+  const rootRef = useRef(null);
+  const menuRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState(null);
+  const selectedIndex = Math.max(0, options.findIndex(option => option.value === value));
+  const selected = options[selectedIndex] || options[0] || { value: '', label: '-' };
+  const allDisabled = options.length === 0 || options.every(option => option.disabled);
+  const SelectedIcon = selected.icon || Gauge;
+  const [activeIndex, setActiveIndex] = useState(selectedIndex);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const updatePosition = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const gap = 8;
+      const viewportHeight = window.innerHeight || 720;
+      const viewportWidth = window.innerWidth || 1024;
+      const width = Math.max(rect.width, 180);
+      const maxHeight = Math.min(320, viewportHeight - gap * 2);
+      const openUp = rect.bottom + maxHeight + gap > viewportHeight && rect.top > maxHeight;
+      const top = openUp
+        ? Math.max(gap, rect.top - maxHeight - gap)
+        : Math.min(viewportHeight - maxHeight - gap, rect.bottom + gap);
+      const left = Math.min(viewportWidth - width - gap, Math.max(gap, rect.left));
+      setMenuStyle({ top, left, width, maxHeight });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    setActiveIndex(selectedIndex);
+  }, [selectedIndex]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActiveIndex(prev => findEnabledIndex(options, prev, event.key === 'ArrowDown' ? 1 : -1));
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const option = options[activeIndex];
+        if (!option?.disabled) {
+          onChange(option.value);
+          setOpen(false);
+        }
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [activeIndex, onChange, open, options]);
+
+  const menu = open && menuStyle && typeof document !== 'undefined' ? createPortal(
+    <div
+      ref={menuRef}
+      role="listbox"
+      style={{
+        position: 'fixed',
+        top: menuStyle.top,
+        left: menuStyle.left,
+        width: menuStyle.width,
+        maxHeight: menuStyle.maxHeight
+      }}
+      className={`z-[120] overflow-y-auto rounded-xl border p-1.5 shadow-2xl ${isDark ? 'bg-[#202124] border-[#3E4145]' : 'bg-white border-slate-200'}`}
+    >
+      {options.map((option, index) => {
+        const Icon = option.icon || Gauge;
+        const selectedOption = option.value === value;
+        const active = index === activeIndex;
+        return (
+          <button
+            key={String(option.value)}
+            type="button"
+            role="option"
+            aria-selected={selectedOption}
+            disabled={option.disabled}
+            onMouseEnter={() => setActiveIndex(index)}
+            onClick={() => {
+              if (option.disabled) return;
+              onChange(option.value);
+              setOpen(false);
+            }}
+            className={`w-full rounded-lg px-3 py-2.5 text-left transition-colors flex items-start gap-3 disabled:cursor-not-allowed disabled:opacity-60 ${active && !option.disabled ? 'bg-emerald-500/10' : isDark ? 'hover:bg-[#2D2F33]' : 'hover:bg-slate-50'}`}
+          >
+            <span className={`mt-0.5 h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${selectedOption ? 'bg-emerald-500 text-white' : 'bg-emerald-500/10 text-emerald-400'}`}>
+              <Icon size={15} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className={`block text-sm font-medium truncate ${isDark ? 'text-[#E8EAED]' : 'text-slate-800'}`}>{option.label}</span>
+              {option.description && <span className={`block text-xs mt-0.5 leading-snug truncate ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>{option.description}</span>}
+            </span>
+            {selectedOption && <Check size={15} className="mt-1 text-emerald-400 shrink-0" />}
+          </button>
+        );
+      })}
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <div ref={rootRef} className={`relative ${className}`}>
+      <button
+        type="button"
+        disabled={allDisabled}
+        onClick={() => setOpen(prev => !prev)}
+        className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors flex items-center justify-between gap-3 disabled:cursor-not-allowed disabled:opacity-60 ${isDark ? 'bg-[#2D2F33] border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <SelectedIcon size={15} className="text-emerald-400 shrink-0" />
+          <span className="truncate">{selected.label}</span>
+        </span>
+        <ChevronDown size={15} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {menu}
+    </div>
+  );
+}
+
+function findEnabledIndex(options, currentIndex, direction) {
+  if (options.length === 0) return 0;
+  for (let offset = 1; offset <= options.length; offset += 1) {
+    const nextIndex = (currentIndex + direction * offset + options.length) % options.length;
+    if (!options[nextIndex]?.disabled) return nextIndex;
+  }
+  return currentIndex;
+}
+
 function PerformanceChart({ points, isDark }) {
   const width = 720;
   const height = 260;
   const pad = 42;
-  // $XBH_AI_PATCH_START
   // FPS 最高按 120 归一化，避免 60/90/120Hz 设备曲线被错误压扁或截断。
   const chartMax = Math.max(100, ...METRICS.map(metric => metric.max || 100));
-  // $XBH_AI_PATCH_END
   const series = METRICS.map(metric => ({
     ...metric,
     path: makePath(points.map(item => item[metric.key]), width, height, pad, chartMax)
@@ -485,7 +807,6 @@ function formatTemp(value) {
   return value == null ? '--' : `${Number(value).toFixed(1)}°C`;
 }
 
-// $XBH_AI_PATCH_START
 // FPS 展示格式与辅助说明。
 function formatFps(value) {
   return value == null ? '--' : `${Number(value).toFixed(1)} FPS`;
@@ -505,7 +826,6 @@ function formatSurfaceFpsSub(fps) {
   if (fps.error) return '合成数据不可用';
   return '等待合成数据';
 }
-// $XBH_AI_PATCH_END
 
 function formatKb(used, total) {
   if (!used || !total) return '-';
@@ -529,6 +849,11 @@ function formatBatterySub(battery) {
   return `电量 ${battery.level ?? '-'}%`;
 }
 
-export default PerformanceDashboard;
+function getFolderFromPath(filePath) {
+  const value = String(filePath || '').trim();
+  if (!value) return '';
+  const index = Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/'));
+  return index > 0 ? value.slice(0, index) : value;
+}
 
-// $XBH_AI_PATCH_END
+export default PerformanceDashboard;

@@ -1,9 +1,9 @@
-// $XBH_AI_PATCH_START
 // App 包管理增强面板：保留安装/推送/浏览，并新增应用列表、详情和会员操作。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  CheckSquare,
   ChevronRight,
   Copy,
   Database,
@@ -16,6 +16,7 @@ import {
   Info,
   Lock,
   Package,
+  Play,
   Power,
   RefreshCw,
   Search,
@@ -58,6 +59,8 @@ function PackageManagerPanel({
   const [permissions, setPermissions] = useState([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState('');
+  const [selectedPackageNames, setSelectedPackageNames] = useState(new Set());
+  const [batchLoading, setBatchLoading] = useState('');
   const showToastRef = useRef(showToast);
 
   const isLoading = (key) => operationLoading?.[key];
@@ -69,10 +72,21 @@ function PackageManagerPanel({
       .filter(item => showSystem || !item.system)
       .filter(item => !text || item.packageName.toLowerCase().includes(text) || item.apkName.toLowerCase().includes(text));
   }, [packages, query, showSystem]);
+  const visiblePackageNames = useMemo(() => filteredPackages.map(item => item.packageName), [filteredPackages]);
+  const selectedCount = selectedPackageNames.size;
+  const allVisibleSelected = visiblePackageNames.length > 0 && visiblePackageNames.every(name => selectedPackageNames.has(name));
 
   useEffect(() => {
     showToastRef.current = showToast;
   }, [showToast]);
+
+  useEffect(() => {
+    setSelectedPackageNames(prev => {
+      const valid = new Set(packages.map(item => item.packageName));
+      const next = new Set(Array.from(prev).filter(name => valid.has(name)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [packages]);
 
   const loadPackages = useCallback(async () => {
     if (!window.electronAPI?.packageList) return;
@@ -166,7 +180,74 @@ function PackageManagerPanel({
     }
   };
 
-  const packageActionButton = (key, label, icon, onClick, tone = 'normal') => {
+  const launchPackage = async () => {
+    if (!selectedPackage) return;
+    setActionLoading('launch');
+    try {
+      const res = await window.electronAPI.packageLaunch({ deviceId: device.id, packageName: selectedPackage.packageName });
+      if (res.ok) showToast?.('启动完成');
+      else showToast?.(`启动失败：${res.error || '未知错误'}`);
+    } catch (error) {
+      showToast?.(`启动异常：${error.message}`);
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const exportSnapshot = async () => {
+    const res = await window.electronAPI.packageSnapshot({ deviceId: device.id });
+    if (res.ok) showToast?.(`包快照已导出：${res.path}`);
+    else showToast?.(`包快照导出失败：${res.error || '未知错误'}`);
+  };
+
+  const togglePackageSelection = (packageName) => {
+    setSelectedPackageNames(prev => {
+      const next = new Set(prev);
+      if (next.has(packageName)) next.delete(packageName);
+      else next.add(packageName);
+      return next;
+    });
+  };
+
+  const toggleVisibleSelection = () => {
+    setSelectedPackageNames(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) visiblePackageNames.forEach(name => next.delete(name));
+      else visiblePackageNames.forEach(name => next.add(name));
+      return next;
+    });
+  };
+
+  const runBatchAction = async (action, label, confirmText) => {
+    if (selectedCount === 0 || !requireVip()) return;
+    if (confirmText && !window.confirm(confirmText)) return;
+    const selectedNames = Array.from(selectedPackageNames);
+    setBatchLoading(action);
+    try {
+      const res = await window.electronAPI.packageBatch({
+        deviceId: device.id,
+        action,
+        packageNames: selectedNames
+      });
+      if (res.ok) showToast?.(`${label}完成：${res.successCount}/${selectedCount}`);
+      else showToast?.(`${label}完成：成功 ${res.successCount || 0}，失败 ${res.failedCount || 0}`);
+      await loadPackages();
+      setSelectedPackageNames(new Set());
+      if (action === 'uninstall' && selectedPackage && selectedNames.includes(selectedPackage.packageName)) {
+        setSelectedPackage(null);
+        setDetail(null);
+        setPermissions([]);
+      } else if (selectedPackage) {
+        await selectPackage(selectedPackage);
+      }
+    } catch (error) {
+      showToast?.(`${label}异常：${error.message}`);
+    } finally {
+      setBatchLoading('');
+    }
+  };
+
+  const packageActionButton = (key, label, icon, onClick, tone = 'normal', vipRequired = true) => {
     const toneClass = tone === 'danger'
       ? 'border-red-500/30 text-red-400 hover:bg-red-500/10'
       : isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100';
@@ -179,7 +260,7 @@ function PackageManagerPanel({
       >
         {actionLoading === key ? <RefreshCw size={13} className="animate-spin" /> : icon}
         {label}
-        {!isVip && <Lock size={12} className="text-amber-400" />}
+        {!isVip && vipRequired && <Lock size={12} className="text-amber-400" />}
       </button>
     );
   };
@@ -195,6 +276,16 @@ function PackageManagerPanel({
           <span className={`text-xs px-2 py-1 rounded ${isDark ? 'bg-[#3E4145] text-[#9AA0A6]' : 'bg-white text-slate-500 border border-slate-200'}`}>
             {userPackageCount}/{packageCount}
           </span>
+          <button
+            type="button"
+            onClick={exportSnapshot}
+            disabled={loadingPackages || packages.length === 0}
+            className={`px-3 py-2 rounded-lg border text-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 ${t.button.secondary}`}
+            title="导出包快照"
+          >
+            <Download size={14} />
+            快照
+          </button>
           <button
             type="button"
             onClick={loadPackages}
@@ -369,7 +460,26 @@ function PackageManagerPanel({
                 {showSystem ? <Eye size={13} /> : <EyeOff size={13} />}
                 系统
               </button>
+              <button
+                type="button"
+                onClick={toggleVisibleSelection}
+                disabled={filteredPackages.length === 0}
+                className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 disabled:opacity-50 ${allVisibleSelected ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : t.button.secondary}`}
+              >
+                <CheckSquare size={13} />
+                {allVisibleSelected ? '取消' : '全选'}
+              </button>
             </div>
+            {selectedCount > 0 && (
+              <div className={`mt-3 rounded-lg border px-3 py-2 flex flex-wrap items-center gap-2 ${isDark ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-xs mr-auto ${isDark ? 'text-[#E8EAED]' : 'text-slate-700'}`}>已选 {selectedCount} 个应用</span>
+                <button type="button" onClick={() => runBatchAction('forceStop', '批量停止')} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'forceStop' ? <RefreshCw size={12} className="animate-spin" /> : <Power size={12} />}停止</button>
+                <button type="button" onClick={() => runBatchAction('clearData', '批量清数据', `确定清除 ${selectedCount} 个应用的数据吗？`)} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'clearData' ? <RefreshCw size={12} className="animate-spin" /> : <Database size={12} />}清数据</button>
+                <button type="button" onClick={() => runBatchAction('disable', '批量停用', `确定停用 ${selectedCount} 个应用吗？`)} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'disable' ? <RefreshCw size={12} className="animate-spin" /> : <EyeOff size={12} />}停用</button>
+                <button type="button" onClick={() => runBatchAction('enable', '批量启用')} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'enable' ? <RefreshCw size={12} className="animate-spin" /> : <Eye size={12} />}启用</button>
+                <button type="button" onClick={() => runBatchAction('uninstall', '批量卸载', `确定卸载 ${selectedCount} 个应用吗？`)} disabled={!!batchLoading} className="px-2.5 py-1.5 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs flex items-center gap-1 disabled:opacity-50">{batchLoading === 'uninstall' ? <RefreshCw size={12} className="animate-spin" /> : <Trash2 size={12} />}卸载</button>
+              </div>
+            )}
           </div>
 
           <div className="grid min-h-[420px] max-h-[720px] grid-cols-1">
@@ -382,13 +492,24 @@ function PackageManagerPanel({
               ) : filteredPackages.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-sm text-[#9AA0A6]">暂无应用</div>
               ) : filteredPackages.map(pkg => (
-                <button
+                <div
                   key={pkg.packageName}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => selectPackage(pkg)}
-                  className={`w-full text-left px-3 py-2.5 border-b transition-colors ${selectedPackage?.packageName === pkg.packageName ? 'bg-emerald-500/10' : isDark ? 'hover:bg-[#2D2F33]' : 'hover:bg-slate-50'} ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') selectPackage(pkg);
+                  }}
+                  className={`w-full text-left px-3 py-2.5 border-b transition-colors cursor-pointer ${selectedPackage?.packageName === pkg.packageName ? 'bg-emerald-500/10' : isDark ? 'hover:bg-[#2D2F33]' : 'hover:bg-slate-50'} ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}
                 >
                   <div className="flex items-center gap-2 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={selectedPackageNames.has(pkg.packageName)}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => togglePackageSelection(pkg.packageName)}
+                      className="h-4 w-4 accent-emerald-500"
+                    />
                     <Package size={14} className={pkg.system ? 'text-slate-400' : 'text-emerald-500'} />
                     <div className="min-w-0 flex-1">
                       <div className={`text-sm font-medium truncate ${t.text}`}>{pkg.packageName}</div>
@@ -396,7 +517,7 @@ function PackageManagerPanel({
                     </div>
                     {pkg.system && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/10 text-slate-400">SYS</span>}
                   </div>
-                </button>
+                </div>
               ))}
             </div>
 
@@ -436,6 +557,7 @@ function PackageManagerPanel({
                   )}
 
                   <div className="flex flex-wrap gap-2">
+                    {packageActionButton('launch', '启动', <Play size={13} />, launchPackage, 'normal', false)}
                     {packageActionButton('permissions', '权限', <ShieldCheck size={13} />, loadPermissions)}
                     {packageActionButton('export', '导出', <Download size={13} />, exportApk)}
                     {packageActionButton('stop', '停止', <Power size={13} />, () => runPackageAction('stop', '强制停止', packageName => window.electronAPI.packageForceStop({ deviceId: device.id, packageName }), false))}
@@ -467,5 +589,3 @@ function PackageManagerPanel({
 }
 
 export default PackageManagerPanel;
-
-// $XBH_AI_PATCH_END

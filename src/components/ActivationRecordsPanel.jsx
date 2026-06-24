@@ -1,4 +1,3 @@
-// $XBH_AI_PATCH_START
 // 激活记录增强面板：激活记录、备注、复制历史、到期时间与重签说明。
 
 import { useCallback, useEffect, useState } from 'react';
@@ -192,5 +191,3 @@ function formatDate(value) {
 }
 
 export default ActivationRecordsPanel;
-
-// $XBH_AI_PATCH_END

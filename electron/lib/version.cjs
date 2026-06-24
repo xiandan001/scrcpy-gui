@@ -8,7 +8,6 @@ const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
-// XBH_AI_PATCH_START
 // 版本号统一管理：使用 Electron 内置的 app.getVersion()
 // 该方法自动读取 package.json 的 version 字段，打包后也能正确获取
 // 修改版本号只需改 package.json 一处，其他地方自动同步
@@ -23,7 +22,6 @@ function getAppVersion() {
   }
   return APP_VERSION;
 }
-// XBH_AI_PATCH_END
 
 // 简单的语义化版本比较：v1 > v2 返回 1，v1 < v2 返回 -1，相等返回 0
 function compareVersions(v1, v2) {
@@ -38,7 +36,6 @@ function compareVersions(v1, v2) {
   return 0;
 }
 
-// XBH_AI_PATCH_START
 // 清理 OTA 更新遗留的安装包
 // electron-updater 下载的安装包默认存放在 userData/pending 目录
 // 安装完成后该文件不会被自动删除，需手动清理以释放磁盘空间
@@ -90,11 +87,9 @@ function consumePendingChangelog() {
   pendingChangelog = { needsShow: false, version: null };
   return result;
 }
-// XBH_AI_PATCH_END
 
 // 注册版本相关 IPC handler
 function register(ipcMain) {
-  // XBH_AI_PATCH_START
   // 版本号统一管理：渲染进程通过此 IPC 获取应用版本
   ipcMain.handle('app:getVersion', async () => {
     return getAppVersion();
@@ -103,7 +98,6 @@ function register(ipcMain) {
   ipcMain.handle('app:checkChangelog', async () => {
     return consumePendingChangelog();
   });
-  // XBH_AI_PATCH_END
 
   // 其他模块也会用到的辅助 IPC
   ipcMain.handle('app:getDocumentsPath', async () => {

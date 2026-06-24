@@ -2,25 +2,21 @@ import { useState, useEffect, useRef } from 'react';
 import { Smartphone, Unplug, Play, Camera, Video, Volume2, VolumeX, Shield, Save, RotateCcw, Loader, Package, Terminal, Pencil, Download, Upload, FolderOpen, Folder, File, ChevronRight, ArrowLeft, Copy, RefreshCw, Send, Loader2, Maximize2, Minimize2, X, ClipboardCheck } from 'lucide-react';
 import themes from '../data/themes';
 import ControlButton from './ControlButton';
-// $XBH_AI_PATCH_START
 // 设备巡检面板：采集逻辑在主进程 inspection 模块中
 import InspectionPanel from './InspectionPanel';
 // App 包管理增强面板
 import PackageManagerPanel from './PackageManagerPanel';
-// $XBH_AI_PATCH_END
 
 function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onScreenshot, onScreenRecordStart, onScreenRecordStop, onReboot, onRebootLoader, onRoot, onRemount, onDisconnect, showApkManager, onApkManager, onSelectApkForInstall, onSelectApkForPush, onInstallApk, onPushApk, onBrowsePath, onPullFile, onPushPathChange, showToast, apkInstallPath, apkPushPath, apkPushRemotePath, pushRemotePathHistory, apkBrowserPath, apkBrowserItems, apkBrowserLoading, operationLoading, onExecuteCommand, theme, sharedCommandHistory, onSaveTerminalCommand, onClearTerminalHistory, vipStatus, inspectionPath, onInspectionPathChange, onOpenMemberCenter }) {
   const isOnline = device.status === 'device';
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(deviceName || '');
   const [showTerminal, setShowTerminal] = useState(false);
-  // XBH_AI_PATCH_START
   // 终端放大模式：脱离原位置，全屏覆盖
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
   // 终端字体大小（Ctrl+滚轮缩放，范围 10-28px）
   const [terminalFontSize, setTerminalFontSize] = useState(12);
   const terminalOutputRef = useRef(null);
-  // XBH_AI_PATCH_END
   const [terminalCommand, setTerminalCommand] = useState('');
   const [terminalOutput, setTerminalOutput] = useState([]);
   const [isExecuting, setIsExecuting] = useState(false);
@@ -28,15 +24,11 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
   const [showHistory, setShowHistory] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isSavingRecord, setIsSavingRecord] = useState(false);
-  // $XBH_AI_PATCH_START
   // 设备巡检弹窗状态
   const [showInspection, setShowInspection] = useState(false);
-  // $XBH_AI_PATCH_END
   const commandHistory = sharedCommandHistory || [];
-  // $XBH_AI_PATCH_START
   // 旧 APK 区块仅作为临时回退源码保留，默认不渲染。
   const showLegacyApkManager = Boolean(globalThis.__XBH_LEGACY_APK_MANAGER__);
-  // $XBH_AI_PATCH_END
 
   const handleNameSubmit = () => {
     onNameChange(device.id, editName.trim());
@@ -79,7 +71,6 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
   };
 
   const handleTerminalKeyDown = (e) => {
-    // XBH_AI_PATCH_START
     // 放大模式下按 Esc 退出
     if (e.key === 'Escape' && terminalFullscreen) {
       e.preventDefault();
@@ -103,7 +94,6 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
       setTerminalFontSize(12);
       return;
     }
-    // XBH_AI_PATCH_END
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleTerminalSubmit();
@@ -126,7 +116,6 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
     }
   };
 
-  // XBH_AI_PATCH_START
   // 终端放大模式下 Ctrl+滚轮缩放字体（10-28px 临界值）
   useEffect(() => {
     if (!terminalFullscreen) return;
@@ -141,7 +130,6 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [terminalFullscreen]);
-  // XBH_AI_PATCH_END
 
   const clearTerminal = () => {
     setTerminalOutput([]);
@@ -336,7 +324,6 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
           theme={t}
           isOnline={isOnline}
         />
-        {/* $XBH_AI_PATCH_START */}
         {/* 设备巡检报告与证据包导出入口 */}
         <ControlButton
           icon={<ClipboardCheck size={16} />}
@@ -346,10 +333,8 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
           theme={t}
           isOnline={isOnline}
         />
-        {/* $XBH_AI_PATCH_END */}
       </div>
 
-      {/* $XBH_AI_PATCH_START */}
       {/* App 包管理增强：使用独立面板承载安装、推送、文件浏览、应用列表与会员操作 */}
       {showApkManager && (
         <PackageManagerPanel
@@ -375,10 +360,8 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
           operationLoading={operationLoading}
         />
       )}
-      {/* $XBH_AI_PATCH_END */}
 
       {/* APK Manager Section */}
-      {/* $XBH_AI_PATCH_MODIFY: 旧 APK 区块已由 PackageManagerPanel 接管，保留源码但关闭渲染以降低本次改动风险 */}
       {showLegacyApkManager && showApkManager && (
         <div className={`border-t p-4 ${t.primary === 'tech' ? 'bg-slate-800/30' : 'bg-slate-50'}`}>
           <h4 className={`text-sm font-semibold mb-3 flex items-center gap-2 ${t.text}`}>
@@ -600,7 +583,6 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
 
       {/* Terminal Section */}
       {showTerminal && (
-        // XBH_AI_PATCH_START
         // 放大模式：fixed 全屏覆盖；普通模式：原位置 border-t
         <div className={`${terminalFullscreen ? 'fixed inset-0 z-50 p-6 flex flex-col' : `border-t p-4`} ${t.terminal.bg}`}>
           <div className={`flex items-center justify-between mb-3 ${t.terminal.accent} ${terminalFullscreen ? 'pb-3 border-b border-[#3E4145]' : ''}`}>
@@ -806,7 +788,6 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
           </div>
         </div>
       )}
-      {/* $XBH_AI_PATCH_START */}
       {/* 设备巡检报告与证据包导出面板 */}
       <InspectionPanel
         open={showInspection}
@@ -819,7 +800,6 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
         onOpenMemberCenter={onOpenMemberCenter}
         showToast={showToast}
       />
-      {/* $XBH_AI_PATCH_END */}
     </div>
   );
 }

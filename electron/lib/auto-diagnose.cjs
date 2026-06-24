@@ -1,4 +1,3 @@
-// XBH_AI_PATCH_START
 // AI 自动诊断引擎：实时检测 logcat 中的崩溃/ANR/OOM 等关键问题
 // 触发后向渲染进程推送 onAutoDiagnose 事件，由用户确认是否调用 AI 分析
 //
@@ -24,7 +23,6 @@ const {
   getNextApiKey,
 } = aiAnalyze.aiKeys;
 
-// $XBH_AI_PATCH_START
 // 日志诊断规则库：内置规则基础版可用，自定义规则与导入导出由会员版解锁。
 const AUTO_DIAGNOSE_RULES_FILE = 'auto-diagnose-rules.json';
 const AUTO_DIAGNOSE_BUILTIN_RULES = [
@@ -98,7 +96,6 @@ const AUTO_DIAGNOSE_BUILTIN_RULES = [
 const AUTO_DIAGNOSE_BUILTIN_IDS = new Set(AUTO_DIAGNOSE_BUILTIN_RULES.map(rule => rule.id));
 let diagnoseRuleStateCache = null;
 let compiledRuleCache = null;
-// $XBH_AI_PATCH_END
 
 // 自动诊断状态
 // - autoDiagnoseEnabled: 总开关（用户可在 UI 关闭）
@@ -114,7 +111,6 @@ function getLogStore() {
   return require('./log-analyzer.cjs').getLogStore();
 }
 
-// $XBH_AI_PATCH_START
 // 规则库持久化与编译缓存
 function getRulesFilePath() {
   return path.join(app.getPath('userData'), AUTO_DIAGNOSE_RULES_FILE);
@@ -265,7 +261,6 @@ function publicRules() {
     updatedAt: rule.updatedAt || null
   }));
 }
-// $XBH_AI_PATCH_END
 
 /**
  * 检测单行日志是否命中关键问题
@@ -273,7 +268,6 @@ function publicRules() {
  * @returns {{type:string,label:string,severity:string}|null}
  */
 function detectIssue(line) {
-  // $XBH_AI_PATCH_START
   // 使用可配置规则库，规则级关键词预筛减少每行正则次数；无关键词的自定义规则直接执行正则。
   const rules = getCompiledRules();
   for (const rule of rules) {
@@ -292,7 +286,6 @@ function detectIssue(line) {
       return { type: rule.type, label: rule.label, severity: rule.severity, ruleId: rule.id };
     }
   }
-  // $XBH_AI_PATCH_END
   return null;
 }
 
@@ -320,10 +313,8 @@ function autoDiagnoseOnLine(line, lineIndex, source = 'realtime', contextEntries
   }
 
   // 立即提取上下文快照（避免 logStore 截断后索引失效）
-  // XBH_AI_PATCH_START
   // 支持外部传入的 entries（用于搜索结果重新扫描场景），避免使用错误的 logStore 源
   const entries = contextEntries || getLogStore()[source] || [];
-  // XBH_AI_PATCH_END
   const start = Math.max(0, lineIndex - AUTO_DIAGNOSE_CONTEXT_LINES);
   const end = Math.min(entries.length, lineIndex + AUTO_DIAGNOSE_CONTEXT_LINES + 1);
   const contextSnapshot = entries.slice(start, end).map(e => {
@@ -363,7 +354,6 @@ function autoDiagnoseOnLine(line, lineIndex, source = 'realtime', contextEntries
  * @param {Array} entries 日志条目数组
  * @param {string} source 日志源标识（'file' | 'search' | 'realtime'），用于日志和上下文
  */
-// XBH_AI_PATCH_START
 // 改为 async 函数，每 1000 条 yield 一次，防止阻塞主进程
 async function autoDiagnoseScanFile(entries, source = 'file') {
   if (!autoDiagnoseEnabled || !entries || entries.length === 0) return;
@@ -380,10 +370,8 @@ async function autoDiagnoseScanFile(entries, source = 'file') {
     const issue = detectIssue(line);
     if (issue && !detectedTypes.has(issue.type)) {
       detectedTypes.add(issue.type);
-      // XBH_AI_PATCH_START
       // 传入 entries 作为上下文来源，确保搜索结果场景下上下文正确
       autoDiagnoseOnLine(line, i, source, entries);
-      // XBH_AI_PATCH_END
     }
     // 每 1000 条 yield 一次，让出主进程事件循环
     if ((i + 1) % CHUNK_SIZE === 0) {
@@ -393,7 +381,6 @@ async function autoDiagnoseScanFile(entries, source = 'file') {
 
   console.log(`[AutoDiagnose] 日志扫描完成（源: ${source}），检测到 ${detectedTypes.size} 种问题`);
 
-  // XBH_AI_PATCH_START
   // 扫描完成后广播事件，渲染进程据此从"监控中"切换到"扫描完成（无异常）"状态
   // 仅当 issueCount === 0 且非实时捕获时，渲染进程才切换到 clean 状态
   ctx.broadcastToAllWindows('auto-diagnose:scan-complete', {
@@ -401,11 +388,9 @@ async function autoDiagnoseScanFile(entries, source = 'file') {
     source,
     timestamp: Date.now()
   });
-  // XBH_AI_PATCH_END
 
   return detectedTypes.size;
 }
-// XBH_AI_PATCH_END
 
 // 重置自动诊断去抖时间戳（log:clear / toggle 关闭时调用）
 function resetAutoDiagnoseLastFire() {
@@ -413,7 +398,6 @@ function resetAutoDiagnoseLastFire() {
 }
 
 function register(ipcMain) {
-  // $XBH_AI_PATCH_START
   // 诊断规则库 IPC：基础版可使用内置规则与重置，会员版解锁自定义规则和导入导出。
   ipcMain.handle('auto-diagnose:rules:list', async () => {
     return { ok: true, rules: publicRules() };
@@ -502,7 +486,6 @@ function register(ipcMain) {
     resetAutoDiagnoseLastFire();
     return { ok: true, rules: publicRules() };
   });
-  // $XBH_AI_PATCH_END
 
   // 用户确认后触发 AI 分析（带自动诊断上下文）
   ipcMain.handle('auto-diagnose:analyze', async (event, args) => {
@@ -719,7 +702,6 @@ function register(ipcMain) {
         // 关闭时清空所有去抖时间戳，下次重新开启时能立即触发
         resetAutoDiagnoseLastFire();
       } else {
-        // XBH_AI_PATCH: 开启时重新扫描已有日志，从头检测一次
         resetAutoDiagnoseLastFire();
         const sender = event.sender;
         // 扫描当前日志源的所有日志
@@ -728,12 +710,10 @@ function register(ipcMain) {
         if (currentEntries.length > 0) {
           console.log(`[AutoDiagnose] 重新开启，扫描已有日志 ${currentEntries.length} 条`);
           setTimeout(() => {
-            // XBH_AI_PATCH_START
             // autoDiagnoseScanFile 现在是 async 函数，使用 .catch 处理 Promise rejection
             autoDiagnoseScanFile(currentEntries).catch(e => {
               console.error('[AutoDiagnose] 重新扫描失败:', e.message);
             });
-            // XBH_AI_PATCH_END
           }, 300);
         }
       }
@@ -743,11 +723,9 @@ function register(ipcMain) {
 
   // 获取自动诊断状态
   ipcMain.handle('auto-diagnose:status', async () => {
-    // $XBH_AI_PATCH_START
     // 返回规则数量，供前端展示规则库状态。
     const rules = publicRules();
     return { ok: true, enabled: autoDiagnoseEnabled, ruleCount: rules.filter(rule => rule.enabled).length, rules };
-    // $XBH_AI_PATCH_END
   });
 
   // 清空自动诊断去抖时间戳（用户手动清除后可立即再次触发）
@@ -756,7 +734,6 @@ function register(ipcMain) {
     return { ok: true };
   });
 
-  // XBH_AI_PATCH_START
   // 重新扫描指定日志条目（搜索完成 / 返回原日志时触发，保持自动诊断与显示区域同步）
   // args.entries: 要扫描的条目数组；为 null 时使用 logStore[source]
   // args.source: 日志源标识（'realtime' | 'file' | 'search'）
@@ -800,7 +777,6 @@ function register(ipcMain) {
 
     return { ok: true, count: entriesToScan.length };
   });
-  // XBH_AI_PATCH_END
 }
 
 module.exports = {

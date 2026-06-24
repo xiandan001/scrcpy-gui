@@ -4,11 +4,9 @@
 const { exec, spawn } = require('child_process');
 const { runCommand, checkCommandExists, findScrcpyPath } = require('./commands.cjs');
 
-// XBH_AI_PATCH_START
 // ScreenRecord: Android native screen recording via adb shell screenrecord
 const screenRecordProcs = new Map();
 
-// XBH_AI_PATCH_START
 // 应用退出时自动停止所有录屏进程
 async function stopAllScreenRecords() {
   if (screenRecordProcs.size === 0) return;
@@ -140,7 +138,6 @@ function register(ipcMain) {
   });
 
   // Basic device control handlers
-  // XBH_AI_PATCH: 使用 spawn + 参数数组，避免 Windows cmd 解析管道符/重定向符
   // 用户输入的 command（含 |、>、< 等）整体传给 Android shell 执行
   ipcMain.handle('adb:shell', async (event, { deviceId, command }) => {
     try {
@@ -404,9 +401,7 @@ function register(ipcMain) {
       return { success: false, error: error.message };
     }
   });
-  // XBH_AI_PATCH_END
 
-  // XBH_AI_PATCH_START
   // 定期清理 screenRecordProcs 中已退出的进程，防止 Map 累积僵尸条目
   // 每 60 秒遍历一次，检查 p.killed || p.exitCode !== null
   setInterval(() => {
@@ -418,7 +413,6 @@ function register(ipcMain) {
       }
     }
   }, 60000).unref();
-  // XBH_AI_PATCH_END
 }
 
 module.exports = {

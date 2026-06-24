@@ -1,4 +1,3 @@
-// XBH_AI_PATCH_START
 // Android Log Analyzer 集成 - IPC 处理程序 + Log Analyzer 窗口生命周期
 // 该模块管理：
 //   - logcatProc / logStore / currentLogSource / pidPackageMap / logBatch 等
@@ -22,7 +21,6 @@ let logStore = { realtime: [], file: [] };
 let currentLogSource = 'realtime';
 let pkgResolverTimer = null;
 let pidPackageMap = new Map();
-// XBH_AI_PATCH_START
 // logStore 字节总量追踪：用于按字节限制内存占用（防止超大日志导致 OOM）
 // - realtime: 实时日志字节总量上限 100MB
 // - file: 文件日志字节总量追踪
@@ -65,7 +63,6 @@ function pushLogToBatch(entry) {
     scheduleLogBatchFlush();
   }
 }
-// XBH_AI_PATCH_END
 
 function parseLogLine(source, line) {
   const threadtimeRe = /^(\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}\.\d{3})\s+(\d+)\s+(\d+)\s+([VDIWEFA])\s+([^:]+):\s?(.*)$/;
@@ -180,7 +177,6 @@ function createLogAnalyzerWindow() {
   }
 
   logAnalyzerWindow.on('closed', () => {
-    // XBH_AI_PATCH_START: 清理 Log Analyzer 资源，防止内存泄漏
     // 停止 logcat 进程
     if (logcatProc) {
       try { logcatProc.kill(); } catch {}
@@ -193,7 +189,6 @@ function createLogAnalyzerWindow() {
     logStore.file = [];
     // 中止正在进行的 AI 分析
     require('./ai-analyze.cjs').abortAiRequest();
-    // XBH_AI_PATCH_END
     ctx.setLogAnalyzerWindow(null);
   });
 
@@ -234,10 +229,8 @@ function register(ipcMain) {
 
       currentLogSource = 'realtime';
       logStore.realtime = [];
-      // XBH_AI_PATCH_START
       // 重置 realtime 字节计数器
       logStoreBytes.realtime = 0;
-      // XBH_AI_PATCH_END
       execFile('adb', ['logcat', '-c'], { windowsHide: true, timeout: 5000 });
       ctx.broadcastToAllWindows('log:reset', { source: 'realtime', entries: [] });
 
@@ -251,7 +244,6 @@ function register(ipcMain) {
       const adbArgs = [];
       if (args?.deviceId) adbArgs.push('-s', args.deviceId);
       adbArgs.push('logcat', '-v', 'threadtime');
-      // XBH_AI_PATCH_START
       // 支持多缓冲区抓取：根据用户选择拼接 -b <buffer> 参数
       // 默认不传 -b（adb 默认 main/system/crash）
       // 用户显式选择时，按选择拼接
@@ -264,7 +256,6 @@ function register(ipcMain) {
       }
       // 兼容旧 extraArgs 参数（追加在 -b 之后）
       if (args?.extraArgs?.length) adbArgs.push(...args.extraArgs);
-      // XBH_AI_PATCH_END
 
       const p = spawn('adb', adbArgs, { windowsHide: true });
       logcatProc = p;
@@ -275,7 +266,6 @@ function register(ipcMain) {
         const pkg = resolvePkg(entry.pid);
         if (pkg) entry.pkg = pkg;
         logStore.realtime.push(entry);
-        // XBH_AI_PATCH_START
         // 按字节限制 + 条数上限双重保护，防止内存无限增长
         const entryBytes = Buffer.byteLength(entry.raw || '', 'utf8');
         logStoreBytes.realtime += entryBytes;
@@ -290,15 +280,10 @@ function register(ipcMain) {
           const removed = logStore.realtime.shift();
           logStoreBytes.realtime -= Buffer.byteLength(removed.raw || '', 'utf8');
         }
-        // XBH_AI_PATCH_END
-        // XBH_AI_PATCH_START
         // 批量发送：累积日志条目，每 100ms 或满 50 条时批量发送（减少 IPC 调用）
         pushLogToBatch(entry);
-        // XBH_AI_PATCH_END
-        // XBH_AI_PATCH_START
         // AI 自动诊断：检测崩溃/ANR/OOM 等关键问题
         autoDiagnose.autoDiagnoseOnLine(line, logStore.realtime.length - 1);
-        // XBH_AI_PATCH_END
       });
 
       // 消费 stderr 防止缓冲区满导致进程挂起
@@ -307,14 +292,12 @@ function register(ipcMain) {
       p.on('exit', () => {
         rl.close();
         if (logcatProc === p) logcatProc = null;
-        // XBH_AI_PATCH_START
         // 进程退出时 flush 剩余批次，避免日志丢失
         if (logBatchFlushTimer) {
           clearTimeout(logBatchFlushTimer);
           logBatchFlushTimer = null;
         }
         flushLogBatch();
-        // XBH_AI_PATCH_END
       });
 
       return { ok: true };
@@ -327,14 +310,12 @@ function register(ipcMain) {
   // 停止抓取日志
   ipcMain.handle('adb:stopLog', async () => {
     stopPidPackageResolver();
-    // XBH_AI_PATCH_START
     // 停止抓取时 flush 剩余批次，避免日志丢失
     if (logBatchFlushTimer) {
       clearTimeout(logBatchFlushTimer);
       logBatchFlushTimer = null;
     }
     flushLogBatch();
-    // XBH_AI_PATCH_END
     if (logcatProc) {
       try { logcatProc.kill(); } catch {}
       logcatProc = null;
@@ -351,13 +332,11 @@ function register(ipcMain) {
     }
     if (!s || s === 'realtime') logStore.realtime = [];
     if (!s || s === 'file') logStore.file = [];
-    // XBH_AI_PATCH_START
     // 同步重置字节计数器，避免计数器与实际数组不一致
     if (!s || s === 'realtime') logStoreBytes.realtime = 0;
     if (!s || s === 'file') logStoreBytes.file = 0;
     // 同步重置自动诊断去抖时间戳，避免下次抓取/加载时旧时间戳抑制告警
     autoDiagnose.resetAutoDiagnoseLastFire();
-    // XBH_AI_PATCH_END
     ctx.broadcastToAllWindows('log:reset', { source: s ?? currentLogSource, entries: [] });
     return { ok: true };
   });
@@ -382,7 +361,6 @@ function register(ipcMain) {
     currentLogSource = 'file';
     const entries = [];
 
-    // XBH_AI_PATCH_START
     // 文件日志加载：限制最大条数 200000，并在 stream error 时显式清理资源
     await new Promise((resolve, reject) => {
       const stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
@@ -406,11 +384,9 @@ function register(ipcMain) {
     logStore.file = fileEntries;
     // 重新计算 file 字节总量
     logStoreBytes.file = fileEntries.reduce((sum, e) => sum + Buffer.byteLength(e.raw || '', 'utf8'), 0);
-    // XBH_AI_PATCH_END
     const limited = entries.length > 50000 ? entries.slice(entries.length - 50000) : entries;
     ctx.broadcastToAllWindows('log:reset', { source: 'file', entries: limited, truncated: entries.length !== limited.length });
 
-    // XBH_AI_PATCH_START
     // 文件加载完成后扫描关键问题（崩溃/ANR/OOM 等）
     // autoDiagnoseScanFile 现在是 async 函数，使用 .catch 防止 unhandled rejection
     setTimeout(() => {
@@ -418,7 +394,6 @@ function register(ipcMain) {
         console.error('[AutoDiagnose] 文件扫描失败:', e.message);
       });
     }, 500);
-    // XBH_AI_PATCH_END
 
     return { ok: true, filePath, total: entries.length, shown: limited.length };
   });

@@ -44,7 +44,9 @@
   },
   "electronDist": ".electron-cache/electron",
   "asar": true,
-  "asarUnpack": [],
+  "asarUnpack": [
+    "electron/lib/performance-worker.cjs"
+  ],
   "compression": "maximum",
   "removePackageScripts": true,
   "removePackageKeywords": true,

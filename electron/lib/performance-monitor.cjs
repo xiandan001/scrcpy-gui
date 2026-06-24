@@ -1,42 +1,43 @@
-// $XBH_AI_PATCH_START
 // 性能监控后端：采集设备 CPU/内存/磁盘/电池/温度/FPS/进程快照，并通过 IPC 推送给渲染进程。
 
 const { app } = require('electron');
+const { Worker } = require('worker_threads');
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const ctx = require('./app-context.cjs');
 const vip = require('./vip.cjs');
+const aiAnalyze = require('./ai-analyze.cjs');
 
 const BUNDLED_ADB_PATH = path.join(__dirname, '../../scrcpy-win64/adb.exe');
-// $XBH_AI_PATCH_START
 // 默认 3 秒采样，减少性能面板数值延后感；1 秒高频仍由会员权限控制。
 const DEFAULT_INTERVAL_MS = 3000;
-// $XBH_AI_PATCH_END
 const VIP_MIN_INTERVAL_MS = 1000;
 const FREE_HISTORY_LIMIT = 60;
 const VIP_HISTORY_LIMIT = 720;
 const COMMAND_TIMEOUT_MS = 15000;
-// $XBH_AI_PATCH_START
 // FPS 采样依赖 dumpsys，单独缩短超时，避免帧率命令拖慢基础指标。
 const FPS_COMMAND_TIMEOUT_MS = 8000;
 const SURFACE_LAYER_CACHE_MS = 10000;
-// $XBH_AI_PATCH_END
 const EXPORT_DIR = 'performance-monitor';
 const THRESHOLDS_FILE = 'performance-thresholds.json';
 
 const monitors = new Map();
 const historyByDevice = new Map();
 const cpuTicksByDevice = new Map();
-// $XBH_AI_PATCH_START
 // 保存帧率上一次采样点，用差值计算当前窗口内 FPS。
 const gfxFrameStatsByDevice = new Map();
 const surfaceFrameStatsByDevice = new Map();
 const surfaceLayerCacheByDevice = new Map();
 const fpsDisplayByMetric = new Map();
-// $XBH_AI_PATCH_END
+const lastSnapshotByDevice = new Map();
+let currentReportTask = null;
+let lastReportTask = null;
 let thresholdCache = null;
+let performanceWorker = null;
+let workerRequestSeq = 0;
+const workerRequests = new Map();
 
 const DEFAULT_THRESHOLDS = {
   cpu: 85,
@@ -52,33 +53,36 @@ function register(ipcMain) {
     const status = await vip.getStatusAsync();
     const isVip = status.activated === true;
     const intervalMs = normalizeInterval(args?.intervalMs, isVip);
-    stopMonitor(deviceId);
+    await stopMonitor(deviceId);
     const monitor = {
       deviceId,
-      sender: event.sender,
       intervalMs,
       includeProcesses: isVip && args?.includeProcesses !== false,
+      vip: isVip,
       running: true,
-      // $XBH_AI_PATCH_START
-      // 防止 ADB 响应慢时 setInterval 重叠触发多批采样命令。
+      startedAt: new Date().toISOString(),
       inFlight: false
-      // $XBH_AI_PATCH_END
     };
     monitors.set(deviceId, monitor);
-    // $XBH_AI_PATCH_START
-    // $XBH_AI_PATCH_MODIFY: 采样统一走串行 tick，避免命令堆积造成卡顿或资源泄漏。
-    await runMonitorTick(monitor);
-    monitor.timer = setInterval(() => {
-      runMonitorTick(monitor);
-    }, intervalMs);
-    // $XBH_AI_PATCH_END
+    const workerResult = await requestWorker('start', {
+      deviceId,
+      intervalMs,
+      includeProcesses: monitor.includeProcesses,
+      startedAt: monitor.startedAt,
+      thresholds: readThresholds(),
+      adbPath: getAdbCommand()
+    }, 3000);
+    if (!workerResult.ok) {
+      monitors.delete(deviceId);
+      return { ok: false, error: workerResult.error || '性能采样 Worker 启动失败' };
+    }
     return { ok: true, deviceId, intervalMs, vip: isVip };
   });
 
   ipcMain.handle('perf:stop', async (event, args) => {
     const deviceId = normalizeDeviceId(args?.deviceId);
     if (!deviceId) return { ok: false, error: 'device_required' };
-    const stopped = stopMonitor(deviceId);
+    const stopped = await stopMonitor(deviceId);
     return { ok: true, stopped };
   });
 
@@ -86,9 +90,13 @@ function register(ipcMain) {
     const deviceId = normalizeDeviceId(args?.deviceId);
     if (!deviceId) return { ok: false, error: 'device_required' };
     const status = await vip.getStatusAsync();
-    const snapshot = await collectSnapshot(deviceId, status.activated === true);
-    appendHistory(deviceId, snapshot, status.activated === true);
-    return { ok: true, snapshot };
+    try {
+      const snapshot = await collectSnapshot(deviceId, status.activated === true, { timeoutMs: 12000 });
+      appendHistory(deviceId, snapshot, status.activated === true);
+      return { ok: true, snapshot };
+    } catch (error) {
+      return { ok: false, error: error.message || 'snapshot_failed' };
+    }
   });
 
   ipcMain.handle('perf:history', async (event, args) => {
@@ -97,14 +105,64 @@ function register(ipcMain) {
     return { ok: true, history: historyByDevice.get(deviceId) || [] };
   });
 
+  ipcMain.handle('perf:state', async (event, args) => {
+    const deviceId = normalizeDeviceId(args?.deviceId);
+    const monitor = deviceId ? monitors.get(deviceId) : null;
+    return {
+      ok: true,
+      monitor: publicMonitor(monitor),
+      monitors: Array.from(monitors.values()).map(publicMonitor),
+      history: deviceId ? historyByDevice.get(deviceId) || [] : []
+    };
+  });
+
   ipcMain.handle('perf:export', async (event, args) => withVip(async () => {
     const deviceId = normalizeDeviceId(args?.deviceId);
     if (!deviceId) return { ok: false, error: 'device_required' };
     const history = historyByDevice.get(deviceId) || [];
     if (history.length === 0) return { ok: false, error: 'no_history' };
-    const outputPath = await writeExport(deviceId, history, args?.outputPath);
+    const outputPath = await writeExport(deviceId, history, args?.outputPath, args?.outputBaseDir);
     return { ok: true, path: outputPath, count: history.length };
   }));
+
+  ipcMain.handle('perf:report', async (event, args) => withVip(async () => {
+    if (currentReportTask) {
+      return { ok: false, error: '已有性能报告正在生成，请等待完成' };
+    }
+    const deviceId = normalizeDeviceId(args?.deviceId);
+    if (!deviceId) return { ok: false, error: 'device_required' };
+    const history = [...(historyByDevice.get(deviceId) || [])];
+    if (history.length === 0) return { ok: false, error: 'no_history' };
+    const task = {
+      id: `perf-report-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      deviceId,
+      sender: event.sender,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      progress: { percent: 5, message: '准备性能报告' },
+      result: null
+    };
+    currentReportTask = task;
+    lastReportTask = publicReportTask(task);
+    sendReportProgress(task);
+    runReportTask(task, {
+      deviceId,
+      history,
+      outputPath: args?.outputPath,
+      outputBaseDir: args?.outputBaseDir,
+      includeAiSummary: args?.includeAiSummary === true
+    });
+    return { ok: true, task: publicReportTask(task) };
+  }));
+
+  ipcMain.handle('perf:reportState', async (event, args) => {
+    const deviceId = normalizeDeviceId(args?.deviceId);
+    const task = currentReportTask ? publicReportTask(currentReportTask) : lastReportTask;
+    if (deviceId && task?.deviceId && task.deviceId !== deviceId) {
+      return { ok: true, task: null };
+    }
+    return { ok: true, task: task || null };
+  });
 
   ipcMain.handle('perf:getThresholds', async () => {
     return { ok: true, thresholds: readThresholds() };
@@ -116,6 +174,7 @@ function register(ipcMain) {
       ...sanitizeThresholds(args?.thresholds || {})
     };
     writeThresholds(next);
+    postWorker('updateThresholds', { thresholds: next });
     return { ok: true, thresholds: next };
   }));
 }
@@ -132,36 +191,64 @@ async function withVip(action) {
   }
 }
 
-async function collectAndPush(monitor) {
-  if (!monitor.running) return;
-  const status = await vip.getStatusAsync();
-  const snapshot = await collectSnapshot(monitor.deviceId, status.activated === true && monitor.includeProcesses);
-  // $XBH_AI_PATCH_START
-  // $XBH_AI_PATCH_MODIFY: 采样期间若用户停止/切换设备，丢弃已过期结果，避免旧数据回写界面。
-  if (!monitor.running || monitors.get(monitor.deviceId) !== monitor) return;
-  // $XBH_AI_PATCH_END
-  appendHistory(monitor.deviceId, snapshot, status.activated === true);
-  broadcastUpdate(monitor.deviceId, { ok: true, snapshot });
-}
-
-// $XBH_AI_PATCH_START
-// 串行执行单次性能采样；上一轮未结束时跳过本轮，保护 ADB 和渲染进程。
-async function runMonitorTick(monitor) {
-  if (!monitor.running || monitor.inFlight) return;
-  monitor.inFlight = true;
+async function runReportTask(task, options) {
   try {
-    await collectAndPush(monitor);
+    const result = await writeReport(
+      options.deviceId,
+      options.history,
+      options.outputPath,
+      options.outputBaseDir,
+      options.includeAiSummary,
+      (progress) => updateReportProgress(task, progress)
+    );
+    const payload = { ok: true, path: result.path, aiSummary: result.aiSummary, count: options.history.length };
+    task.status = 'success';
+    task.progress = { percent: 100, message: '性能报告已生成' };
+    task.result = payload;
+    lastReportTask = publicReportTask(task);
+    sendReportDone(task, payload);
   } catch (error) {
-    if (monitor.running && monitors.get(monitor.deviceId) === monitor) {
-      broadcastUpdate(monitor.deviceId, { ok: false, error: error.message, timestamp: Date.now() });
-    }
+    const payload = { ok: false, error: error.message || '性能报告生成失败' };
+    task.status = 'failed';
+    task.progress = { percent: 100, message: '性能报告生成失败' };
+    task.result = payload;
+    lastReportTask = publicReportTask(task);
+    sendReportDone(task, payload);
   } finally {
-    monitor.inFlight = false;
+    if (currentReportTask === task) currentReportTask = null;
   }
 }
-// $XBH_AI_PATCH_END
 
-async function collectSnapshot(deviceId, includeProcesses) {
+function updateReportProgress(task, progress) {
+  task.progress = {
+    percent: Math.max(0, Math.min(100, Number(progress?.percent) || 0)),
+    message: String(progress?.message || '正在生成性能报告')
+  };
+  task.status = 'running';
+  lastReportTask = publicReportTask(task);
+  sendReportProgress(task);
+}
+
+async function collectSnapshot(deviceId, includeProcesses, options = {}) {
+  const normalizedDeviceId = normalizeDeviceId(deviceId);
+  if (!normalizedDeviceId) throw new Error('device_required');
+  const result = await requestWorker('snapshot', {
+    deviceId: normalizedDeviceId,
+    includeProcesses: includeProcesses === true,
+    forceHeavy: options.includeFps !== false,
+    thresholds: readThresholds(),
+    adbPath: getAdbCommand()
+  }, options.timeoutMs || 12000);
+  if (result.ok && result.snapshot) return result.snapshot;
+  if (options.fallbackToLegacy === true) {
+    return collectSnapshotLegacy(normalizedDeviceId, includeProcesses, options);
+  }
+  throw new Error(result.error || 'snapshot_failed');
+}
+
+async function collectSnapshotLegacy(deviceId, includeProcesses, options = {}) {
+  const previousSnapshot = options.previousSnapshot || lastSnapshotByDevice.get(deviceId) || null;
+  const includeFps = options.includeFps !== false;
   const [cpu, meminfo, df, battery, thermal, top, fps] = await Promise.all([
     runAdb(['-s', deviceId, 'shell', 'cat', '/proc/stat']),
     runAdb(['-s', deviceId, 'shell', 'cat', '/proc/meminfo']),
@@ -169,10 +256,8 @@ async function collectSnapshot(deviceId, includeProcesses) {
     runAdb(['-s', deviceId, 'shell', 'dumpsys', 'battery']),
     runAdb(['-s', deviceId, 'shell', 'dumpsys', 'thermalservice']),
     includeProcesses ? runTop(deviceId) : Promise.resolve({ ok: true, stdout: '' }),
-    // $XBH_AI_PATCH_START
     // FPS 采样失败不影响基础性能指标。
-    collectFps(deviceId).catch(error => buildEmptyFps(error.message))
-    // $XBH_AI_PATCH_END
+    includeFps ? collectFps(deviceId).catch(error => buildEmptyFps(error.message)) : Promise.resolve(previousSnapshot?.fps || buildEmptyFps(''))
   ]);
   const snapshot = {
     timestamp: Date.now(),
@@ -183,7 +268,7 @@ async function collectSnapshot(deviceId, includeProcesses) {
     battery: parseBattery(battery.stdout),
     thermal: parseThermal(thermal.stdout),
     fps,
-    processes: includeProcesses ? parseTop(top.stdout) : [],
+    processes: includeProcesses ? parseTop(top.stdout) : previousSnapshot?.processes || [],
     warnings: []
   };
   snapshot.warnings = buildWarnings(snapshot, readThresholds());
@@ -289,7 +374,6 @@ function parseTop(text) {
   }).filter(item => item.pid);
 }
 
-// $XBH_AI_PATCH_START
 // 采集前台应用 FPS 与 SurfaceFlinger 合成 FPS。
 async function collectFps(deviceId) {
   const foreground = await getForegroundApp(deviceId);
@@ -374,13 +458,11 @@ function parseGfxInfoFps(deviceId, packageName, text) {
   if (newestFrameNs) {
     gfxFrameStatsByDevice.set(key, { lastFrameNs: newestFrameNs, targetFrameNs, totalFrames, jankyFrames });
   }
-  // $XBH_AI_PATCH_START
   // 前台 FPS 主值按累计帧/卡顿帧折算。framestats 单帧耗时会把轻微滑动误判成 30/40 FPS，
   // 但用户实际看到的是流畅动画；只有 janky frames 明确增加时才降低主显示。
   const rawFps = state === 'active' && deltaFrames > 0
     ? estimateEffectiveFpsFromFrameDelta(deltaFrames, deltaJankyFrames, targetFps)
     : targetFps;
-  // $XBH_AI_PATCH_END
   const fps = smoothFpsValue(`foreground:${key}`, rawFps, targetFps, state);
   return {
     fps: roundFps(fps ?? targetFps),
@@ -604,7 +686,6 @@ function clearDeviceFpsState(deviceId) {
   });
   surfaceLayerCacheByDevice.delete(deviceId);
 }
-// $XBH_AI_PATCH_END
 
 function buildWarnings(snapshot, thresholds) {
   const warnings = [];
@@ -613,7 +694,7 @@ function buildWarnings(snapshot, thresholds) {
   const temperature = snapshot.battery.temperature ?? snapshot.thermal.hottest;
   if (temperature != null && temperature >= thresholds.batteryTemp) warnings.push({ type: 'batteryTemp', label: `温度 ${temperature}°C` });
   const highDisk = snapshot.disk.find(item => item.mount === '/data' && item.usage >= thresholds.dataUsed);
-  if (highDisk) warnings.push({ type: 'disk', label: `/data ${highDisk.usage}%` });
+  if (highDisk) warnings.push({ type: 'disk', label: `存储空间 ${highDisk.usage}%` });
   return warnings;
 }
 
@@ -623,32 +704,168 @@ function appendHistory(deviceId, snapshot, isVip) {
   const limit = isVip ? VIP_HISTORY_LIMIT : FREE_HISTORY_LIMIT;
   while (history.length > limit) history.shift();
   historyByDevice.set(deviceId, history);
+  lastSnapshotByDevice.set(deviceId, snapshot);
 }
 
 function broadcastUpdate(deviceId, payload) {
   ctx.broadcastToAllWindows('performance:update', { deviceId, ...payload });
 }
 
-function stopMonitor(deviceId) {
+function ensurePerformanceWorker() {
+  if (performanceWorker) return performanceWorker;
+  performanceWorker = new Worker(getPerformanceWorkerPath(), {
+    workerData: {
+      adbPath: getAdbCommand(),
+      thresholds: readThresholds()
+    }
+  });
+  performanceWorker.on('message', handleWorkerMessage);
+  performanceWorker.on('error', handleWorkerFailure);
+  performanceWorker.on('exit', (code) => {
+    if (code !== 0) handleWorkerFailure(new Error(`性能采样 Worker 已退出：${code}`));
+    performanceWorker = null;
+  });
+  return performanceWorker;
+}
+
+function getPerformanceWorkerPath() {
+  const workerPath = path.join(__dirname, 'performance-worker.cjs');
+  if (!app.isPackaged) return workerPath;
+  const unpackedPath = workerPath.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+  return fs.existsSync(unpackedPath) ? unpackedPath : workerPath;
+}
+
+function handleWorkerMessage(message) {
+  if (message?.type === 'response' && message.id) {
+    const pending = workerRequests.get(message.id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    workerRequests.delete(message.id);
+    pending.resolve(message);
+    return;
+  }
+  if (message?.type === 'snapshot' && message.deviceId && message.snapshot) {
+    appendHistory(message.deviceId, message.snapshot, monitors.get(message.deviceId)?.vip === true);
+    broadcastUpdate(message.deviceId, { ok: true, snapshot: message.snapshot });
+    return;
+  }
+  if (message?.type === 'monitorError' && message.deviceId) {
+    broadcastUpdate(message.deviceId, { ok: false, error: message.error || '性能采样失败', timestamp: message.timestamp || Date.now() });
+  }
+}
+
+function handleWorkerFailure(error) {
+  workerRequests.forEach(pending => {
+    clearTimeout(pending.timer);
+    pending.resolve({ ok: false, error: error.message || '性能采样 Worker 异常' });
+  });
+  workerRequests.clear();
+  monitors.forEach(monitor => {
+    monitor.running = false;
+    monitor.inFlight = false;
+  });
+}
+
+function requestWorker(action, payload = {}, timeoutMs = 5000) {
+  let worker;
+  try {
+    worker = ensurePerformanceWorker();
+  } catch (error) {
+    return Promise.resolve({ ok: false, error: error.message || 'worker_unavailable' });
+  }
+  const id = `perf-${++workerRequestSeq}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      workerRequests.delete(id);
+      resolve({ ok: false, error: 'worker_timeout' });
+    }, timeoutMs);
+    workerRequests.set(id, { resolve, timer });
+    try {
+      worker.postMessage({ id, action, ...payload });
+    } catch (error) {
+      clearTimeout(timer);
+      workerRequests.delete(id);
+      resolve({ ok: false, error: error.message || 'worker_post_failed' });
+    }
+  });
+}
+
+function postWorker(action, payload = {}) {
+  try {
+    ensurePerformanceWorker().postMessage({ action, ...payload, adbPath: getAdbCommand() });
+  } catch {}
+}
+
+function sendReportProgress(task) {
+  sendReportEvent(task, 'perf:reportProgress', publicReportTask(task));
+}
+
+function sendReportDone(task, payload) {
+  sendReportEvent(task, 'perf:reportDone', { ...publicReportTask(task), result: payload });
+}
+
+function sendReportEvent(task, channel, payload) {
+  if (task.sender && !task.sender.isDestroyed()) {
+    task.sender.send(channel, payload);
+    return;
+  }
+  ctx.broadcastToAllWindows(channel, payload);
+}
+
+function publicReportTask(task) {
+  if (!task) return null;
+  return {
+    id: task.id,
+    taskId: task.id,
+    deviceId: task.deviceId,
+    status: task.status,
+    startedAt: task.startedAt || null,
+    progress: task.progress || null,
+    result: task.result || null
+  };
+}
+
+async function stopMonitor(deviceId) {
   const monitor = monitors.get(deviceId);
   if (!monitor) return false;
   monitor.running = false;
-  if (monitor.timer) clearInterval(monitor.timer);
   monitors.delete(deviceId);
-  // $XBH_AI_PATCH_START
+  await requestWorker('stop', { deviceId, adbPath: getAdbCommand() }, 3000).catch(() => {});
   // 停止监控时清理该设备的 FPS 差值状态，避免下次启动使用过期采样点。
   clearDeviceFpsState(deviceId);
-  // $XBH_AI_PATCH_END
   return true;
 }
 
+function publicMonitor(monitor) {
+  if (!monitor) return null;
+  return {
+    deviceId: monitor.deviceId,
+    intervalMs: monitor.intervalMs,
+    includeProcesses: monitor.includeProcesses,
+    running: monitor.running === true,
+    startedAt: monitor.startedAt || null,
+    inFlight: monitor.inFlight === true,
+    worker: true
+  };
+}
+
 function cleanup() {
-  Array.from(monitors.keys()).forEach(stopMonitor);
+  monitors.clear();
+  workerRequests.forEach(pending => {
+    clearTimeout(pending.timer);
+    pending.resolve({ ok: false, error: 'cleanup' });
+  });
+  workerRequests.clear();
+  if (performanceWorker) {
+    try { performanceWorker.postMessage({ action: 'shutdown' }); } catch {}
+    try { performanceWorker.terminate(); } catch {}
+    performanceWorker = null;
+  }
 }
 
 function runAdb(args, timeoutMs = COMMAND_TIMEOUT_MS) {
   return new Promise((resolve) => {
-    const adbCommand = fs.existsSync(BUNDLED_ADB_PATH) ? BUNDLED_ADB_PATH : 'adb';
+    const adbCommand = getAdbCommand();
     const adbArgs = Array.isArray(args) ? args : [];
     const proc = execFile(adbCommand, adbArgs, { windowsHide: true, timeout: timeoutMs }, (error, stdout, stderr) => {
       if (error) {
@@ -659,6 +876,15 @@ function runAdb(args, timeoutMs = COMMAND_TIMEOUT_MS) {
     });
     proc.stdin?.end?.();
   });
+}
+
+function getAdbCommand() {
+  const candidates = [
+    BUNDLED_ADB_PATH,
+    process.resourcesPath ? path.join(process.resourcesPath, '..', 'scrcpy-win64', 'adb.exe') : '',
+    process.execPath ? path.join(path.dirname(process.execPath), 'scrcpy-win64', 'adb.exe') : ''
+  ].filter(Boolean);
+  return candidates.find(candidate => fs.existsSync(candidate)) || 'adb';
 }
 
 function readThresholds() {
@@ -687,14 +913,206 @@ function sanitizeThresholds(value) {
   return next;
 }
 
-async function writeExport(deviceId, history, outputPath) {
-  const baseDir = path.join(app.getPath('userData'), EXPORT_DIR);
-  await fs.promises.mkdir(baseDir, { recursive: true });
-  const filePath = outputPath && typeof outputPath === 'string'
-    ? path.resolve(outputPath)
-    : path.join(baseDir, `performance-${sanitizeName(deviceId)}-${formatStamp(new Date())}.json`);
+async function writeExport(deviceId, history, outputPath, outputBaseDir) {
+  const filePath = await resolvePerformanceFile(deviceId, outputPath, outputBaseDir, 'performance', 'json');
   await fs.promises.writeFile(filePath, JSON.stringify({ deviceId, exportedAt: new Date().toISOString(), history }, null, 2), 'utf8');
   return filePath;
+}
+
+async function writeReport(deviceId, history, outputPath, outputBaseDir, includeAiSummary, onProgress) {
+  onProgress?.({ percent: 15, message: '统计性能采样数据' });
+  const filePath = await resolvePerformanceFile(deviceId, outputPath, outputBaseDir, 'performance-report', 'md');
+  const summary = summarizeHistory(history);
+  const warningRows = history
+    .flatMap(item => (item.warnings || []).map(warning => ({ at: item.timestamp, ...warning })))
+    .slice(-50);
+  onProgress?.({ percent: includeAiSummary ? 45 : 75, message: includeAiSummary ? '生成 AI 分析' : '写入性能报告' });
+  const aiSummary = includeAiSummary ? await buildPerformanceAiSummary(deviceId, history, summary, warningRows) : { ok: false, skipped: true, summary: '' };
+  onProgress?.({ percent: 85, message: '写入性能报告' });
+  await fs.promises.writeFile(filePath, buildPerformanceReport(deviceId, history, aiSummary), 'utf8');
+  return { path: filePath, aiSummary };
+}
+
+async function resolvePerformanceFile(deviceId, outputPath, outputBaseDir, prefix, extension) {
+  const baseDir = outputBaseDir && typeof outputBaseDir === 'string'
+    ? path.resolve(outputBaseDir)
+    : path.join(app.getPath('userData'), EXPORT_DIR);
+  await fs.promises.mkdir(baseDir, { recursive: true });
+  if (outputPath && typeof outputPath === 'string') {
+    return path.resolve(outputPath);
+  }
+  return path.join(baseDir, `${prefix}-${sanitizeName(deviceId)}-${formatStamp(new Date())}.${extension}`);
+}
+
+function buildPerformanceReport(deviceId, history, aiSummary) {
+  const summary = summarizeHistory(history);
+  const latest = history[history.length - 1] || {};
+  const warningRows = history
+    .flatMap(item => (item.warnings || []).map(warning => ({ at: item.timestamp, ...warning })))
+    .slice(-50);
+  const lines = [
+    '# 性能分析报告',
+    '',
+    '## 概要',
+    '',
+    `- 设备 ID：${deviceId}`,
+    `- 生成时间：${new Date().toISOString()}`,
+    `- 样本数量：${history.length}`,
+    `- 时间范围：${formatIso(summary.startedAt)} ~ ${formatIso(summary.endedAt)}`,
+    '',
+    '## 指标统计',
+    '',
+    '| 指标 | 平均 | 峰值 | 最近一次 |',
+    '| --- | ---: | ---: | ---: |',
+    `| CPU | ${formatPercent(summary.cpu.avg)} | ${formatPercent(summary.cpu.max)} | ${formatPercent(latest.cpu?.usage)} |`,
+    `| 内存 | ${formatPercent(summary.memory.avg)} | ${formatPercent(summary.memory.max)} | ${formatPercent(latest.memory?.usage)} |`,
+    `| 存储空间 | ${formatPercent(summary.data.avg)} | ${formatPercent(summary.data.max)} | ${formatPercent(getDataDisk(latest)?.usage)} |`,
+    `| 温度 | ${formatTemp(summary.temperature.avg)} | ${formatTemp(summary.temperature.max)} | ${formatTemp(getDeviceTemperature(latest))} |`,
+    `| 前台 FPS | ${formatFps(summary.foregroundFps.avg)} | ${formatFps(summary.foregroundFps.max)} | ${formatFps(latest.fps?.foreground?.fps)} |`,
+    `| 合成 FPS | ${formatFps(summary.surfaceFps.avg)} | ${formatFps(summary.surfaceFps.max)} | ${formatFps(latest.fps?.surfaceFlinger?.fps)} |`,
+    '',
+    '## 告警',
+    ''
+  ];
+
+  if (warningRows.length === 0) {
+    lines.push('- 采样窗口内未触发阈值告警');
+  } else {
+    warningRows.forEach(item => lines.push(`- ${formatIso(item.at)}：${item.label}`));
+  }
+
+  lines.push('', '## 最近进程占用', '');
+  const processes = latest.processes || [];
+  if (processes.length === 0) {
+    lines.push('- 无进程明细数据');
+  } else {
+    lines.push('| PID | 进程 | CPU | 内存 |', '| --- | --- | ---: | ---: |');
+    processes.slice(0, 12).forEach(proc => {
+      lines.push(`| ${proc.pid || '-'} | ${escapeTable(proc.name || '-')} | ${formatPercent(proc.cpu)} | ${formatPercent(proc.memory)} |`);
+    });
+  }
+
+  lines.push('', '## 结论', '', buildPerformanceConclusion(summary, warningRows), '', '## AI 分析', '', ...formatAiAnalysisLines(aiSummary), '');
+  return lines.join('\n');
+}
+
+function formatAiAnalysisLines(aiSummary) {
+  if (!aiSummary || aiSummary.skipped) return ['- 未勾选 AI 分析'];
+  if (!aiSummary.ok) return [`- AI 分析未生成：${aiSummary.error || '未知错误'}`];
+  const lines = String(aiSummary.summary || '')
+    .split(/\r?\n/)
+    .map(line => line.trimEnd());
+  return lines.some(Boolean) ? lines : ['- AI 分析为空'];
+}
+
+async function buildPerformanceAiSummary(deviceId, history, summary, warnings) {
+  const latest = history[history.length - 1] || {};
+  const processes = (latest.processes || [])
+    .slice(0, 8)
+    .map(item => `- ${item.name || '-'} pid=${item.pid || '-'} cpu=${formatPercent(item.cpu)} mem=${formatPercent(item.memory)}`)
+    .join('\n') || '- 无';
+  const warningText = warnings
+    .slice(-20)
+    .map(item => `- ${formatIso(item.at)} ${item.label}`)
+    .join('\n') || '- 无';
+  const prompt = [
+    `设备 ID: ${deviceId}`,
+    `样本数: ${history.length}`,
+    `时间范围: ${formatIso(summary.startedAt)} ~ ${formatIso(summary.endedAt)}`,
+    '',
+    '指标统计:',
+    `- CPU 平均 ${formatPercent(summary.cpu.avg)} 峰值 ${formatPercent(summary.cpu.max)}`,
+    `- 内存 平均 ${formatPercent(summary.memory.avg)} 峰值 ${formatPercent(summary.memory.max)}`,
+    `- 存储空间 平均 ${formatPercent(summary.data.avg)} 峰值 ${formatPercent(summary.data.max)}`,
+    `- 温度 平均 ${formatTemp(summary.temperature.avg)} 峰值 ${formatTemp(summary.temperature.max)}`,
+    `- 前台 FPS 平均 ${formatFps(summary.foregroundFps.avg)} 峰值 ${formatFps(summary.foregroundFps.max)}`,
+    `- 合成 FPS 平均 ${formatFps(summary.surfaceFps.avg)} 峰值 ${formatFps(summary.surfaceFps.max)}`,
+    '',
+    '告警:',
+    warningText,
+    '',
+    '最近进程占用:',
+    processes,
+    '',
+    '请输出一段面向 Android 性能排查的中文 AI 总结，包含：总体判断、风险点、建议验证动作。不要编造未提供的数据。'
+  ].join('\n');
+  return aiAnalyze.generateAiSummary({
+    systemPrompt: '你是 Android 性能分析报告助手，只根据给定性能指标输出简洁、可执行的中文结论。',
+    userContent: prompt,
+    timeoutMs: 60000,
+    temperature: 0.2
+  });
+}
+
+function summarizeHistory(history) {
+  const values = {
+    cpu: history.map(item => item.cpu?.usage),
+    memory: history.map(item => item.memory?.usage),
+    data: history.map(item => getDataDisk(item)?.usage),
+    temperature: history.map(getDeviceTemperature),
+    foregroundFps: history.map(item => item.fps?.foreground?.fps),
+    surfaceFps: history.map(item => item.fps?.surfaceFlinger?.fps)
+  };
+  return {
+    startedAt: history[0]?.timestamp,
+    endedAt: history[history.length - 1]?.timestamp,
+    cpu: summarizeNumbers(values.cpu),
+    memory: summarizeNumbers(values.memory),
+    data: summarizeNumbers(values.data),
+    temperature: summarizeNumbers(values.temperature),
+    foregroundFps: summarizeNumbers(values.foregroundFps),
+    surfaceFps: summarizeNumbers(values.surfaceFps)
+  };
+}
+
+function summarizeNumbers(values) {
+  const nums = values.filter(Number.isFinite);
+  if (nums.length === 0) return { avg: null, max: null };
+  return {
+    avg: Number((nums.reduce((sum, value) => sum + value, 0) / nums.length).toFixed(1)),
+    max: Number(Math.max(...nums).toFixed(1))
+  };
+}
+
+function buildPerformanceConclusion(summary, warnings) {
+  const items = [];
+  if (summary.cpu.max != null && summary.cpu.max >= readThresholds().cpu) items.push(`CPU 峰值达到 ${formatPercent(summary.cpu.max)}`);
+  if (summary.memory.max != null && summary.memory.max >= readThresholds().memory) items.push(`内存峰值达到 ${formatPercent(summary.memory.max)}`);
+  if (summary.temperature.max != null && summary.temperature.max >= readThresholds().batteryTemp) items.push(`温度峰值达到 ${formatTemp(summary.temperature.max)}`);
+  if (summary.data.max != null && summary.data.max >= readThresholds().dataUsed) items.push(`存储空间使用率峰值达到 ${formatPercent(summary.data.max)}`);
+  if (warnings.length > 0) items.push(`采样期间触发 ${warnings.length} 条阈值告警`);
+  return items.length === 0 ? '- 采样窗口内未发现明确性能风险。' : items.map(item => `- ${item}`).join('\n');
+}
+
+function getDataDisk(snapshot) {
+  const disks = snapshot?.disk || [];
+  return disks.find(item => item.mount === '/data') || disks.find(item => item.mount === '/storage/emulated') || null;
+}
+
+function getDeviceTemperature(snapshot) {
+  const batteryTemp = snapshot?.battery?.temperature;
+  if (batteryTemp != null && batteryTemp > 0) return batteryTemp;
+  return snapshot?.thermal?.hottest ?? null;
+}
+
+function formatIso(timestamp) {
+  return timestamp ? new Date(timestamp).toISOString() : '-';
+}
+
+function formatPercent(value) {
+  return value == null ? '-' : `${Number(value).toFixed(1)}%`;
+}
+
+function formatTemp(value) {
+  return value == null ? '-' : `${Number(value).toFixed(1)}°C`;
+}
+
+function formatFps(value) {
+  return value == null ? '-' : `${Number(value).toFixed(1)} FPS`;
+}
+
+function escapeTable(value) {
+  return String(value || '').replace(/\|/g, '\\|');
 }
 
 function getThresholdPath() {
@@ -736,5 +1154,3 @@ function firstPercent(parts) {
 }
 
 module.exports = { register, cleanup, collectSnapshot };
-
-// $XBH_AI_PATCH_END

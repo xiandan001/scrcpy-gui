@@ -1,14 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
-import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle, Crown, Lock, ClipboardCheck, Gauge } from 'lucide-react';
+import { useCallback, useState, useEffect, useRef } from 'react';
+import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle, Crown, Lock, ClipboardCheck, Gauge, ClipboardList } from 'lucide-react';
 import './index.css';
 import themes from './data/themes';
 import { getChangelog } from './data/changelogs';
 import DeviceCard from './components/DeviceCard';
 import MemberCenter from './components/MemberCenter';
-// $XBH_AI_PATCH_START
 // 性能监控面板
 import PerformanceDashboard from './components/PerformanceDashboard';
-// $XBH_AI_PATCH_END
+import TaskCenter from './components/TaskCenter';
 
 function App() {
   const [devices, setDevices] = useState([]);
@@ -23,16 +22,11 @@ function App() {
     bitrate: '8 Mbps',
     maxSize: '0'
   });
-  // XBH_AI_PATCH_START
   // Toast 提示状态
   const [toast, setToast] = useState(null);
-  // $XBH_AI_PATCH_START
   // 避免连续提示时旧定时器清掉新的 Toast。
   const toastTimerRef = useRef(null);
-  // $XBH_AI_PATCH_END
-  const showToast = (message, duration = 5000) => {
-    // $XBH_AI_PATCH_START
-    // $XBH_AI_PATCH_MODIFY: 每次显示新 Toast 前先清理旧定时器，防止提示闪退。
+  const showToast = useCallback((message, duration = 5000) => {
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
       toastTimerRef.current = null;
@@ -42,8 +36,7 @@ function App() {
       setToast(null);
       toastTimerRef.current = null;
     }, duration);
-    // $XBH_AI_PATCH_END
-  };
+  }, []);
   // Confirm 确认框状态
   const [confirmModal, setConfirmModal] = useState(null);
   // 更新安装确认框状态（带加载条）
@@ -56,11 +49,14 @@ function App() {
   const [screenshotPath, setScreenshotPath] = useState('');
   // 录屏保存路径
   const [screenRecordPath, setScreenRecordPath] = useState('');
-  // XBH_AI_PATCH_START
   // 巡检报告与证据包保存路径
   const [inspectionPath, setInspectionPath] = useState('');
   const inspectionPathLoadedRef = useRef(false);
-  // XBH_AI_PATCH_END
+  // 性能导出与分析报告保存路径
+  const [performancePath, setPerformancePath] = useState('');
+  const performancePathLoadedRef = useRef(false);
+  const [backgroundTasks, setBackgroundTasks] = useState({ inspection: null, performanceReport: null });
+  const backgroundTaskHideTimersRef = useRef({});
   const [deviceNames, setDeviceNames] = useState({});
   const [expandedDeviceIds, setExpandedDeviceIds] = useState(new Set());
   const [apkInstallPaths, setApkInstallPaths] = useState({});
@@ -70,18 +66,15 @@ function App() {
   const [apkBrowserItemsMap, setApkBrowserItemsMap] = useState({});
   const [apkBrowserLoadingMap, setApkBrowserLoadingMap] = useState({});
   const [operationLoading, setOperationLoading] = useState({});
-  // XBH_AI_PATCH_START
   // 记住上次文件选择对话框打开的文件夹路径
   const [lastSelectFolder, setLastSelectFolder] = useState('');
   // 推送远程路径历史记录
   const [pushRemotePathHistory, setPushRemotePathHistory] = useState([]);
-  // XBH_AI_PATCH_END
   const [currentTheme, setCurrentTheme] = useState('default');
   const [customThemes, setCustomThemes] = useState([]);
   const [showThemeEditor, setShowThemeEditor] = useState(false);
   const [editingTheme, setEditingTheme] = useState(null);
   const [newThemeName, setNewThemeName] = useState('');
-  // XBH_AI_PATCH_START
   // 自动更新状态
   const [appVersion, setAppVersion] = useState('');
   const [updaterState, setUpdaterState] = useState({
@@ -103,7 +96,6 @@ function App() {
   // appVersion 的 ref，供事件回调中读取最新值（避免闭包捕获旧值）
   const appVersionRef = useRef('');
   useEffect(() => { appVersionRef.current = appVersion; }, [appVersion]);
-  // XBH_AI_PATCH_END
   const [themeColors, setThemeColors] = useState({
     primary: 'emerald',
     primaryFrom: 'from-emerald-500',
@@ -121,7 +113,6 @@ function App() {
     terminalText: 'text-[#E8EAED]',
     terminalAccent: 'text-emerald-400'
   });
-  // XBH_AI_PATCH_START
   // 连接历史记录
   const [connectionHistory, setConnectionHistory] = useState([]);
   // 终端命令历史记录（全局共享）
@@ -131,18 +122,19 @@ function App() {
     activated: false, scope: 'free', type: null,
     issuedAt: null, expiresAt: null, machineId: null, reason: 'loading'
   });
-  const refreshVipStatus = async () => {
-    if (window.electronAPI?.vipGetStatus) {
+  const refreshVipStatus = useCallback(async () => {
+    if (!window.electronAPI?.vipGetStatus) return;
+    try {
       const s = await window.electronAPI.vipGetStatus();
       setVipStatus(s);
+    } catch (error) {
+      setVipStatus(prev => ({ ...prev, activated: false, scope: 'free', reason: 'vip_status_failed', error: error.message }));
     }
-  };
-  // XBH_AI_PATCH_END
+  }, []);
 
   const allThemes = { ...themes, ...Object.fromEntries(customThemes.map(t => [t.key, t])) };
   const theme = allThemes[currentTheme] || themes.default;
 
-  // $XBH_AI_PATCH_START
   // 组件卸载时清理 Toast 定时器，避免窗口关闭后仍触发状态更新。
   useEffect(() => {
     return () => {
@@ -152,7 +144,6 @@ function App() {
       }
     };
   }, []);
-  // $XBH_AI_PATCH_END
 
   const saveCustomTheme = () => {
     const themeName = newThemeName.trim() || `自定义${customThemes.length + 1}`;
@@ -232,8 +223,6 @@ function App() {
     setError('');
     try {
       if (window.electronAPI) {
-        // $XBH_AI_PATCH_START
-        // $XBH_AI_PATCH_MODIFY: ADB 提前返回时清理超时定时器，避免频繁刷新设备后残留等待任务。
         let timeoutId = null;
         try {
           const timeoutPromise = new Promise((_, reject) => {
@@ -247,7 +236,6 @@ function App() {
         } finally {
           if (timeoutId) clearTimeout(timeoutId);
         }
-        // $XBH_AI_PATCH_END
       } else {
         // Mock data for browser testing
         setDevices([
@@ -274,7 +262,6 @@ function App() {
       }
     };
     loadCustomThemes();
-    // XBH_AI_PATCH_START
     // 加载截图保存路径
     const loadScreenshotPath = async () => {
       if (window.electronAPI) {
@@ -295,7 +282,6 @@ function App() {
       }
     };
     loadScreenRecordPath();
-    // XBH_AI_PATCH_START
     // 加载巡检保存路径
     const loadInspectionPath = async () => {
       if (window.electronAPI) {
@@ -307,8 +293,17 @@ function App() {
       }
     };
     loadInspectionPath();
-    // XBH_AI_PATCH_END
-    // XBH_AI_PATCH_END
+    // 加载性能导出保存路径
+    const loadPerformancePath = async () => {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.loadPerformancePath();
+        if (result.success && result.data) {
+          setPerformancePath(result.data);
+        }
+        performancePathLoadedRef.current = true;
+      }
+    };
+    loadPerformancePath();
     // 加载连接历史记录
     const loadConnectionHistory = async () => {
       if (window.electronAPI) {
@@ -339,11 +334,9 @@ function App() {
       }
     };
     loadPushHistory();
-    // XBH_AI_PATCH_START
     // 初始化 VIP 状态
     refreshVipStatus();
-    // XBH_AI_PATCH_END
-  }, [autoUpdateEnabled]);
+  }, [autoUpdateEnabled, refreshVipStatus]);
 
   useEffect(() => {
     const saveThemes = async () => {
@@ -354,7 +347,6 @@ function App() {
     saveThemes();
   }, [customThemes]);
 
-  // XBH_AI_PATCH_START
   // 保存截图路径变化时自动保存
   useEffect(() => {
     const saveScreenshotPath = async () => {
@@ -373,7 +365,6 @@ function App() {
     };
     saveScreenRecordPath();
   }, [screenRecordPath]);
-  // XBH_AI_PATCH_START
   // 保存巡检路径变化时自动保存
   useEffect(() => {
     const saveInspectionPath = async () => {
@@ -383,7 +374,81 @@ function App() {
     };
     saveInspectionPath();
   }, [inspectionPath]);
-  // XBH_AI_PATCH_END
+  // 保存性能导出路径变化时自动保存
+  useEffect(() => {
+    const savePerformancePath = async () => {
+      if (window.electronAPI && performancePathLoadedRef.current) {
+        await window.electronAPI.savePerformancePath(performancePath);
+      }
+    };
+    savePerformancePath();
+  }, [performancePath]);
+
+  useEffect(() => {
+    const hideLater = (key, task) => {
+      if (backgroundTaskHideTimersRef.current[key]) {
+        clearTimeout(backgroundTaskHideTimersRef.current[key]);
+      }
+      backgroundTaskHideTimersRef.current[key] = setTimeout(() => {
+        setBackgroundTasks(prev => {
+          if (prev[key]?.id !== task?.id) return prev;
+          return { ...prev, [key]: null };
+        });
+        backgroundTaskHideTimersRef.current[key] = null;
+      }, 6000);
+    };
+    const setTask = (key, task, autoHide = false) => {
+      setBackgroundTasks(prev => ({ ...prev, [key]: task || null }));
+      if (autoHide && task) hideLater(key, task);
+    };
+    window.electronAPI?.inspectionState?.({}).then(res => {
+      const task = res?.task;
+      if (task && isBackgroundTaskActive(task)) setTask('inspection', task);
+    });
+    window.electronAPI?.perfReportState?.({}).then(res => {
+      const task = res?.task;
+      if (task && isBackgroundTaskActive(task)) setTask('performanceReport', task);
+    });
+    const offInspectionProgress = window.electronAPI?.onInspectionProgress?.((progress) => {
+      setTask('inspection', {
+        id: progress.taskId,
+        taskId: progress.taskId,
+        deviceId: progress.deviceId,
+        status: 'running',
+        progress
+      });
+    });
+    const offInspectionDone = window.electronAPI?.onInspectionDone?.((result) => {
+      const task = {
+        id: result.taskId,
+        taskId: result.taskId,
+        deviceId: result.deviceId,
+        status: result.cancelled ? 'cancelled' : result.ok ? 'success' : 'failed',
+        progress: { percent: 100, message: result.cancelled ? '巡检已取消' : result.ok ? '巡检已完成' : '巡检失败' },
+        result
+      };
+      setTask('inspection', task, true);
+    });
+    const offReportProgress = window.electronAPI?.onPerfReportProgress?.((task) => {
+      setTask('performanceReport', task);
+    });
+    const offReportDone = window.electronAPI?.onPerfReportDone?.((task) => {
+      setTask('performanceReport', task, true);
+      if (task?.result?.ok) showToast(`性能报告已生成：${task.result.path}`);
+      else if (task?.result?.error) showToast(`性能报告生成失败：${task.result.error}`);
+    });
+    return () => {
+      offInspectionProgress?.();
+      offInspectionDone?.();
+      offReportProgress?.();
+      offReportDone?.();
+      Object.values(backgroundTaskHideTimersRef.current).forEach(timer => {
+        if (timer) clearTimeout(timer);
+      });
+      backgroundTaskHideTimersRef.current = {};
+    };
+  }, [showToast]);
+
   // 保存推送远程路径历史变化时自动持久化
   useEffect(() => {
     const savePushHistory = async () => {
@@ -394,7 +459,6 @@ function App() {
     savePushHistory();
   }, [pushRemotePathHistory]);
 
-  // XBH_AI_PATCH_START
   // 获取应用版本号 + 主动查询是否需要显示更新说明
   // 使用拉取模式：渲染进程加载完成后主动调用 IPC 查询，避免事件推送丢失。
   // 同时保留 localStorage fallback：即使 main 进程时序或 IPC 异常，也能通过
@@ -473,7 +537,6 @@ function App() {
     localStorage.setItem('autoUpdateEnabled', autoUpdateEnabled ? 'true' : 'false');
   }, [autoUpdateEnabled]);
 
-  // $XBH_AI_PATCH_START
   // 自动更新依赖 autoUpdateEnabled，避免开关变化后启动检查仍使用旧状态。
   // 应用启动后自动检查更新（仅在开关开启时）
   // 发现新版本后自动下载，下载完成后左下角显示安装图标
@@ -529,8 +592,6 @@ function App() {
     }, 3000); // 启动 3 秒后检查
     return () => clearTimeout(timer);
   }, [autoUpdateEnabled]);
-  // $XBH_AI_PATCH_END
-  // XBH_AI_PATCH_END
 
   const handleScreenRecordStart = async (deviceId) => {
     try {
@@ -564,7 +625,6 @@ function App() {
       return { success: false, error: err.message };
     }
   };
-  // XBH_AI_PATCH_END
 
   const handleStartScrcpy = async (deviceId) => {
     try {
@@ -611,7 +671,6 @@ function App() {
     }
   };
 
-  // XBH_AI_PATCH_START
   // 保存终端命令到全局共享历史记录
   const handleSaveTerminalCommand = async (command) => {
     const trimmedCmd = (command || '').trim();
@@ -633,9 +692,7 @@ function App() {
     }
     showToast('终端命令历史已清除');
   };
-  // XBH_AI_PATCH_END
 
-  // XBH_AI_PATCH_START
   const handleScreenshot = async (deviceId) => {
     setOperationLoading(prev => ({ ...prev, [`screenshot_${deviceId}`]: true }));
     try {
@@ -669,7 +726,6 @@ function App() {
       setOperationLoading(prev => ({ ...prev, [`screenshot_${deviceId}`]: false }));
     }
   };
-  // XBH_AI_PATCH_END
 
   const handleReboot = async (deviceId) => {
     setOperationLoading(prev => ({ ...prev, [`reboot_${deviceId}`]: true }));
@@ -831,13 +887,11 @@ function App() {
         const res = await window.electronAPI.adbPush(deviceId, localPath, remotePath);
         if (res.success) {
           showToast(`推送成功！文件: ${localPath} 目标: ${remotePath}`);
-          // XBH_AI_PATCH_START
           // 推送成功后将远程路径加入历史记录
           setPushRemotePathHistory(prev => {
             const filtered = prev.filter(p => p !== remotePath);
             return [remotePath, ...filtered].slice(0, 10);
           });
-          // XBH_AI_PATCH_END
         } else {
           showToast(`推送失败: ${res.error}`);
         }
@@ -990,7 +1044,6 @@ function App() {
           {toast}
         </div>
       )}
-      {/* XBH_AI_PATCH_START */}
       {/* 更新说明弹窗（版本升级后首次打开时显示，放在顶层确保任何页面都能弹出） */}
       {showChangelog && changelogContent && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
@@ -1054,7 +1107,6 @@ function App() {
           </div>
         </div>
       )}
-      {/* XBH_AI_PATCH_END */}
       {/* Confirm 确认框 */}
       {confirmModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -1165,7 +1217,14 @@ function App() {
             <History size={20} />
             <span className="font-medium">连接历史</span>
           </button>
-          {/* $XBH_AI_PATCH_START */}
+          <button
+            onClick={() => setActiveTab('tasks')}
+            className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'tasks' ? `${t.primary === 'cyan' || t.primary === 'blue' ? 'bg-cyan-500/20 text-cyan-400' : t.primary === 'pink' ? 'bg-pink-500/20 text-pink-400' : t.primary === 'green' ? 'bg-green-500/20 text-green-400' : t.primary === 'orange' ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400'}` : 'hover:bg-[#2D2F33]'}`}
+            style={{ WebkitAppRegion: 'no-drag' }}
+          >
+            <ClipboardList size={20} />
+            <span className="font-medium">任务中心</span>
+          </button>
           {/* 性能监控主入口 */}
           <button
             onClick={() => setActiveTab('performance')}
@@ -1175,7 +1234,6 @@ function App() {
             <Gauge size={20} />
             <span className="font-medium">性能监控</span>
           </button>
-          {/* $XBH_AI_PATCH_END */}
           <button
             onClick={() => setActiveTab('settings')}
             className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'settings' ? `${t.primary === 'cyan' || t.primary === 'blue' ? 'bg-cyan-500/20 text-cyan-400' : t.primary === 'pink' ? 'bg-pink-500/20 text-pink-400' : t.primary === 'green' ? 'bg-green-500/20 text-green-400' : t.primary === 'orange' ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400'}` : 'hover:bg-[#2D2F33]'}`}
@@ -1184,7 +1242,6 @@ function App() {
             <Settings size={20} />
             <span className="font-medium">偏好设置</span>
           </button>
-          {/* XBH_AI_PATCH_START Log分析服务 */}
           <button
             onClick={() => {
               if (window.electronAPI && window.electronAPI.logAnalyzerOpen) {
@@ -1197,8 +1254,6 @@ function App() {
             <Bot size={20} />
             <span className="font-medium">AI 日志助手</span>
           </button>
-          {/* XBH_AI_PATCH_END */}
-          {/* XBH_AI_PATCH_START 会员中心 */}
           <button
             onClick={() => {
               setActiveTab('member');
@@ -1210,8 +1265,12 @@ function App() {
             <Crown size={20} />
             <span className="font-medium">会员中心</span>
           </button>
-          {/* XBH_AI_PATCH_END */}
         </nav>
+
+        <BackgroundTaskStack
+          tasks={buildSidebarBackgroundTasks(backgroundTasks)}
+          onOpen={(tab) => setActiveTab(tab)}
+        />
 
         {/* 左下角更新安装入口（已下载完成时显示） */}
         {updaterState.downloaded && (
@@ -1239,15 +1298,13 @@ function App() {
         {/* Header */}
         <header className={`px-8 pb-6 border-b flex justify-between items-center sticky top-0 z-10 ${t.primary === 'tech' ? 'bg-[#202124]/90 border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
           <div>
-            {/* $XBH_AI_PATCH_START */}
             {/* 性能监控 Tab 标题与描述 */}
             <h2 className={`text-2xl font-bold ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
-              {activeTab === 'devices' ? '已连接设备' : activeTab === 'history' ? '连接历史' : activeTab === 'performance' ? '性能监控' : activeTab === 'member' ? '会员中心' : '全局设置'}
+              {activeTab === 'devices' ? '已连接设备' : activeTab === 'history' ? '连接历史' : activeTab === 'tasks' ? '任务中心' : activeTab === 'performance' ? '性能监控' : activeTab === 'member' ? '会员中心' : '全局设置'}
             </h2>
             <p className={`text-sm mt-1 ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'}`}>
-              {activeTab === 'devices' ? '管理并投屏您的 Android 设备' : activeTab === 'history' ? '查看无线连接历史记录' : activeTab === 'performance' ? '观察设备资源与进程状态' : activeTab === 'member' ? '管理您的会员权益与激活' : '配置 Scrcpy 及 ADB 相关偏好'}
+              {activeTab === 'devices' ? '管理并投屏您的 Android 设备' : activeTab === 'history' ? '查看无线连接历史记录' : activeTab === 'tasks' ? '编排复现脚本并批量运行到多台设备' : activeTab === 'performance' ? '观察设备资源与进程状态' : activeTab === 'member' ? '管理您的会员权益与激活' : '配置 Scrcpy 及 ADB 相关偏好'}
             </p>
-            {/* $XBH_AI_PATCH_END */}
           </div>
 
           {activeTab === 'devices' && (
@@ -1315,7 +1372,6 @@ function App() {
                     return (
                       <>
                         {visibleDevices.map(device => (
-                    /* $XBH_AI_PATCH_START 设备巡检报告与证据包导出会员门控 */
                     <DeviceCard
                       key={device.id}
                       device={device}
@@ -1371,9 +1427,7 @@ function App() {
                       onInspectionPathChange={setInspectionPath}
                       onOpenMemberCenter={() => setActiveTab('member')}
                     />
-                    /* $XBH_AI_PATCH_END */
                   ))}
-                  {/* XBH_AI_PATCH: 非会员锁定占位卡 */}
                   {lockedCount > 0 && (
                     <div className={`col-span-full flex items-center justify-center gap-3 p-6 rounded-xl border-2 border-dashed ${t.primary === 'tech' ? 'border-[#3E4145] bg-slate-800/40' : 'border-slate-300 bg-slate-50'}`}>
                       <Lock size={20} className="text-amber-400" />
@@ -1392,7 +1446,6 @@ function App() {
 
           {activeTab === 'history' && (
             <div className="space-y-6">
-              {/* XBH_AI_PATCH_START */}
               {/* 连接历史记录页面 */}
               <div className={`p-6 rounded-xl border shadow-sm ${t.primary === 'tech' ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
                 <div className="flex items-center justify-between mb-6">
@@ -1489,7 +1542,6 @@ function App() {
                         </div>
                       </div>
                     ))}
-                    {/* XBH_AI_PATCH: 非会员历史锁定提示 */}
                     {lockedHistoryCount > 0 && (
                       <div className={`col-span-full flex items-center justify-center gap-3 p-5 rounded-xl border-2 border-dashed ${t.primary === 'tech' ? 'border-[#3E4145] bg-slate-800/40' : 'border-slate-300 bg-slate-50'}`}>
                         <Lock size={18} className="text-amber-400" />
@@ -1504,22 +1556,29 @@ function App() {
                   </div>
                 )}
               </div>
-              {/* XBH_AI_PATCH_END */}
             </div>
           )}
 
-          {/* $XBH_AI_PATCH_START */}
+          {activeTab === 'tasks' && (
+            <TaskCenter
+              devices={devices}
+              theme={theme}
+              showToast={showToast}
+            />
+          )}
+
           {/* 性能监控页面 */}
           {activeTab === 'performance' && (
             <PerformanceDashboard
               devices={devices}
               theme={theme}
               vipStatus={vipStatus}
+              performancePath={performancePath}
               showToast={showToast}
               onOpenMemberCenter={() => setActiveTab('member')}
+              onRefreshVipStatus={refreshVipStatus}
             />
           )}
-          {/* $XBH_AI_PATCH_END */}
 
           {activeTab === 'member' && (
             <MemberCenter
@@ -1604,7 +1663,6 @@ function App() {
                   </select>
                 </div>
 
-                {/* XBH_AI_PATCH_START */}
                 {/* 截图保存路径设置 */}
                 <div className={`py-3 border-b ${t.primary === 'tech' ? 'border-[#3E4145]' : 'border-slate-100'}`}>
                   <div className="flex items-center gap-2 mb-2">
@@ -1656,9 +1714,7 @@ function App() {
                     截图将保存到此目录，默认为 %APPDATA%/scrcpy-gui/screenshot/
                   </p>
                 </div>
-                {/* XBH_AI_PATCH_END */}
 
-                {/* XBH_AI_PATCH_START */}
                 {/* 录屏保存路径设置 */}
                 <div className={`py-3 border-b ${t.primary === 'tech' ? 'border-[#3E4145]' : 'border-slate-100'}`}>
                   <div className="flex items-center gap-2 mb-2">
@@ -1710,9 +1766,7 @@ function App() {
                     录屏文件将保存到此目录，默认为 %APPDATA%/scrcpy-gui/screenrecord/
                   </p>
                 </div>
-                {/* XBH_AI_PATCH_END */}
 
-                {/* XBH_AI_PATCH_START */}
                 {/* 巡检保存路径设置 */}
                 <div className={`py-3 border-b ${t.primary === 'tech' ? 'border-[#3E4145]' : 'border-slate-100'}`}>
                   <div className="flex items-center gap-2 mb-2">
@@ -1764,7 +1818,59 @@ function App() {
                     巡检报告和证据包将保存到此目录，默认为 %APPDATA%/scrcpy-gui/inspection/
                   </p>
                 </div>
-                {/* XBH_AI_PATCH_END */}
+
+                {/* 性能导出保存路径设置 */}
+                <div className={`py-3 border-b ${t.primary === 'tech' ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Gauge size={16} className={t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'} />
+                    <span className={`font-medium ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-700'}`}>性能导出保存路径</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={performancePath}
+                      onChange={(e) => setPerformancePath(e.target.value)}
+                      placeholder="默认: %APPDATA%/scrcpy-gui/performance-monitor/"
+                      className={`flex-1 border text-sm rounded-lg p-2.5 ${t.primary === 'tech' ? 'bg-[#3E4145] border-[#5F6368] text-[#E8EAED]' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                    />
+                    <button
+                      onClick={async () => {
+                        if (window.electronAPI) {
+                          const result = await window.electronAPI.selectFolder();
+                          if (result.success && result.path) {
+                            setPerformancePath(result.path);
+                          }
+                        }
+                      }}
+                      className={`px-3 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 ${t.primary === 'tech' ? 'bg-[#3E4145] hover:bg-slate-600 text-[#E8EAED] border border-[#5F6368]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'}`}
+                    >
+                      <FolderOpen size={16} />
+                      浏览
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (window.electronAPI) {
+                          let targetPath = performancePath;
+                          if (!targetPath) {
+                            const userDataResult = await window.electronAPI.getUserDataPath();
+                            targetPath = userDataResult.success ? `${userDataResult.path}/performance-monitor` : '';
+                          }
+                          if (targetPath) {
+                            await window.electronAPI.ensureFolder(targetPath);
+                            await window.electronAPI.openFolder(targetPath);
+                          }
+                        }
+                      }}
+                      className={`px-3 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 ${t.primary === 'tech' ? 'bg-[#3E4145] hover:bg-slate-600 text-[#E8EAED] border border-[#5F6368]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'}`}
+                    >
+                      <Folder size={16} />
+                      打开
+                    </button>
+                  </div>
+                  <p className={`text-xs mt-1.5 ${t.primary === 'tech' ? 'text-[#80868B]' : 'text-[#9AA0A6]'}`}>
+                    性能数据和分析报告将保存到此目录，默认为 %APPDATA%/scrcpy-gui/performance-monitor/
+                  </p>
+                </div>
 
                 {/* Theme Selection */}
                 <div className="py-3">
@@ -1850,7 +1956,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* XBH_AI_PATCH_START */}
                 {/* 关于与更新 */}
                 <div className="py-3">
                   <div className="flex items-center gap-2 mb-3">
@@ -2012,9 +2117,7 @@ function App() {
                     </div>
                   </div>
                 </div>
-                {/* XBH_AI_PATCH_END */}
 
-                {/* XBH_AI_PATCH_START */}
                 {/* 重置所有设置（放在最后） */}
                 <div className="py-4 border-t mt-4">
                   <div className="flex items-center justify-between">
@@ -2032,10 +2135,9 @@ function App() {
                           setCurrentTheme('default');
                           setScreenshotPath('');
                           setScreenRecordPath('');
-                          // XBH_AI_PATCH_START
                           // 重置巡检保存路径
                           setInspectionPath('');
-                          // XBH_AI_PATCH_END
+                          setPerformancePath('');
                           setScrcpySettings({
                             screenOff: false,
                             stayAwake: true,
@@ -2049,10 +2151,9 @@ function App() {
                             await window.electronAPI.saveCustomThemes([]);
                             await window.electronAPI.saveScreenshotPath('');
                             await window.electronAPI.saveScreenRecordPath('');
-                            // XBH_AI_PATCH_START
                             // 同步清空巡检保存路径
                             await window.electronAPI.saveInspectionPath('');
-                            // XBH_AI_PATCH_END
+                            await window.electronAPI.savePerformancePath('');
                           }
                           showToast('所有设置已重置为默认值');
                         });
@@ -2064,7 +2165,6 @@ function App() {
                     </button>
                   </div>
                 </div>
-                {/* XBH_AI_PATCH_END */}
 
                 {/* Custom Theme Editor Modal */}
                 {showThemeEditor && (
@@ -2240,6 +2340,90 @@ function App() {
       </div>
     </div>
   );
+}
+
+function BackgroundTaskStack({ tasks, onOpen }) {
+  if (!tasks.length) return null;
+  return (
+    <div className="px-4 py-3 border-t border-[#3E4145] space-y-2">
+      {tasks.map(task => {
+        const Icon = task.icon;
+        const active = task.status === 'running' || task.status === 'cancelling';
+        const StatusIcon = active ? Loader2 : task.status === 'failed' ? AlertCircle : CheckCircle2;
+        return (
+          <button
+            key={task.key}
+            type="button"
+            onClick={() => onOpen?.(task.tab)}
+            className="w-full rounded-lg border border-[#3E4145] bg-[#2D2F33]/80 px-3 py-2.5 text-left hover:bg-[#3E4145] transition-colors"
+            title={task.title}
+          >
+            <div className="flex items-center gap-2">
+              <Icon size={16} className={task.status === 'failed' ? 'text-red-400' : 'text-emerald-400'} />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold text-[#E8EAED] truncate">{task.title}</div>
+                <div className="text-[10px] text-[#9AA0A6] truncate">{task.message}</div>
+              </div>
+              <StatusIcon size={15} className={`${active ? 'animate-spin text-emerald-400' : task.status === 'failed' ? 'text-red-400' : 'text-emerald-400'} shrink-0`} />
+            </div>
+            <div className="mt-2 h-1.5 rounded-full overflow-hidden bg-[#202124]">
+              <div className={`h-full rounded-full transition-all ${task.status === 'failed' ? 'bg-red-400' : task.status === 'cancelled' ? 'bg-amber-400' : 'bg-emerald-400'}`} style={{ width: `${task.percent}%` }} />
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function buildSidebarBackgroundTasks(backgroundTasks) {
+  return [
+    toSidebarTask('inspection', backgroundTasks.inspection),
+    toSidebarTask('performanceReport', backgroundTasks.performanceReport)
+  ].filter(Boolean);
+}
+
+function toSidebarTask(key, task) {
+  if (!task) return null;
+  const running = isBackgroundTaskActive(task);
+  const failed = task.status === 'failed';
+  const cancelled = task.status === 'cancelled';
+  const percent = getBackgroundTaskPercent(key, task);
+  if (!running && !failed && !cancelled && task.status !== 'success') return null;
+  if (key === 'inspection') {
+    return {
+      key,
+      tab: 'devices',
+      icon: ClipboardCheck,
+      status: task.status || 'running',
+      title: running ? '设备巡检运行中' : cancelled ? '设备巡检已取消' : failed ? '设备巡检失败' : '设备巡检完成',
+      message: task.progress?.stepLabel || task.progress?.message || task.result?.error || task.deviceId || '等待巡检进度',
+      percent
+    };
+  }
+  return {
+    key,
+    tab: 'performance',
+    icon: Gauge,
+    status: task.status || 'running',
+    title: running ? '性能报告生成中' : failed ? '性能报告失败' : '性能报告完成',
+    message: task.progress?.message || task.result?.error || task.deviceId || '等待报告进度',
+    percent
+  };
+}
+
+function getBackgroundTaskPercent(key, task) {
+  const progress = task?.progress || {};
+  if (Number.isFinite(progress.percent)) return Math.max(0, Math.min(100, Math.round(progress.percent)));
+  if (key === 'inspection' && progress.total) {
+    return Math.max(0, Math.min(100, Math.round((Number(progress.index) || 0) / progress.total * 100)));
+  }
+  if (task?.status === 'success' || task?.status === 'failed' || task?.status === 'cancelled') return 100;
+  return 5;
+}
+
+function isBackgroundTaskActive(task) {
+  return task?.status === 'running' || task?.status === 'cancelling';
 }
 
 export default App;

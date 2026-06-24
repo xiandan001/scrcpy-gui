@@ -1,6 +1,5 @@
 // electron/lib/machine-id.cjs
 // 采集 Windows 硬件指纹（CPU + 主板 + 磁盘 + MachineGuid），输出 SHA-256 机器码
-// XBH_AI_PATCH: VIP 会员体系 - 机器码绑定
 // 性能优化：4 个 PowerShell 合并为 1 次 JSON 输出，启动仅 1 个子进程（~2秒）
 
 const { exec } = require('child_process');

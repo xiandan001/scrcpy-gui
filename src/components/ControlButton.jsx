@@ -13,13 +13,11 @@ function ControlButton({ icon, label, onClick, disabled, loading, theme, isRecor
     return 'text-emerald-600';
   };
 
-  // XBH_AI_PATCH_START
   // 录屏按钮红色样式
   const isRecordButton = isRecording !== undefined;
   const buttonClass = isRecordButton && isRecording
     ? 'flex items-center space-x-2 border bg-red-500 hover:bg-red-600 text-white disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5 rounded-md text-sm font-medium transition-colors'
     : `flex items-center space-x-2 border ${t.button.secondary} hover:${getSecondaryClass()} disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5 rounded-md text-sm font-medium transition-colors`;
-  // XBH_AI_PATCH_END
 
   return (
     <button

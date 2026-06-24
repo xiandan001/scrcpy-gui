@@ -1,4 +1,3 @@
-// XBH_AI_PATCH_START
 // 版本更新说明（changelog）- 每次发版时在这里添加对应版本的更新内容
 // 格式：{ title, date, items: [{ type: 'feature'|'fix'|'improve', text }] }
 // type 对应不同颜色标签：feature(绿色新增) fix(红色修复) improve(蓝色优化)
@@ -190,7 +189,6 @@ const CHANGELOGS = {
       { type: 'fix', text: '修复部分错误' }
     ]
   },
-  // $XBH_AI_PATCH_START
   // v3.5.0 发版更新说明：仅保留用户可感知变化和泛化修复措辞。
   '3.5.0': {
     title: 'v3.5.0',
@@ -232,8 +230,21 @@ const CHANGELOGS = {
     items: [
       { type: 'fix', text: '修复部分错误' }
     ]
+  },
+  '3.6.0': {
+    title: 'v3.6.0',
+    date: '2026-06-24',
+    items: [
+      { type: 'feature', text: '新增任务中心：支持复现步骤编排与后台执行进度展示' },
+      { type: 'feature', text: '新增设备巡检和性能报告 AI 分析，可按需勾选生成' },
+      { type: 'feature', text: '新增巡检报告和性能报告保存路径设置与打开入口' },
+      { type: 'feature', text: '新增 MCP 服务工具：支持应用包查询、性能采样和设备巡检' },
+      { type: 'improve', text: '优化性能监控体验' },
+      { type: 'improve', text: '优化应用性能' },
+      { type: 'improve', text: '优化用户体验' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
   }
-  // $XBH_AI_PATCH_END
 };
 
 function getChangelog(version) {
@@ -250,8 +261,7 @@ function compareVersions(v1, v2) {
     if (a > b) return 1;
     if (a < b) return -1;
   }
-return 0;
+  return 0;
 }
-// XBH_AI_PATCH_END
 
 export { CHANGELOGS, getChangelog, compareVersions };
