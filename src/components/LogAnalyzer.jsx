@@ -1,13 +1,9 @@
-// XBH_AI_PATCH_START
 // H5: 导入 memo 用于 LogRow 性能优化
 import { useEffect, useMemo, useState, useDeferredValue, useRef, memo } from 'react';
-// XBH_AI_PATCH_END
 import { FolderOpen, Play, Square, Trash2, Download, Copy, RefreshCw, Terminal, Filter, BarChart3, HelpCircle, Radio, X, Sparkles, Loader2, Send, StopCircle, Maximize2, Minimize2, FileDown, AlertTriangle, Zap, ShieldCheck, Search, Brain, CheckCircle, Layers, ChevronDown, Smartphone, Lock } from 'lucide-react';
 import { filterEntries, countByLevel } from '../shared/filter';
-// $XBH_AI_PATCH_START
 // 日志诊断规则库面板
 import DiagnosticRuleLibrary from './DiagnosticRuleLibrary';
-// $XBH_AI_PATCH_END
 
 const emptyFilter = {};
 
@@ -41,7 +37,6 @@ const levelBgColors = {
   A: 'bg-white/10 border-white/20'
 };
 
-// XBH_AI_PATCH_START
 // 级别圆点颜色（用于下拉框指示）
 const levelDotColors = {
   V: 'bg-slate-400',
@@ -55,7 +50,6 @@ const levelDotColors = {
 function levelColorDot(v) {
   return levelDotColors[v] || 'bg-slate-400';
 }
-// XBH_AI_PATCH_END
 
 function fmtTs(ts) {
   const d = new Date(ts);
@@ -75,7 +69,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       primary: 'bg-emerald-500 hover:bg-emerald-600 text-white'
     }
   };
-  // XBH_AI_PATCH_START
   // VIP 门控：LogAnalyzer 在独立窗口渲染，props 可能未传 vipStatus，故主动拉取
   const [vipStatusState, setVipStatusState] = useState(null);
   const effectiveVipStatus = vipStatus || vipStatusState;
@@ -83,14 +76,11 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   const [vipBlockMsg, setVipBlockMsg] = useState('');
   const showVipBlock = (featureName) => setVipBlockMsg(featureName);
   const dismissVipBlock = () => setVipBlockMsg('');
-  // XBH_AI_PATCH_END
   const [devices, setDevices] = useState([]);
   const [deviceId, setDeviceId] = useState('');
   const [running, setRunning] = useState(false);
-  // XBH_AI_PATCH_START
   // runningRef: 在事件回调（useEffect 内）中同步读取捕获状态，判断是否应切换到 clean 状态
   const runningRef = useRef(false);
-  // XBH_AI_PATCH_END
   const [source, setSource] = useState('realtime');
   const [entries, setEntries] = useState([]);
   const [truncated, setTruncated] = useState(false);
@@ -101,7 +91,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   const [mcpPort, setMcpPort] = useState(49321);
   const [mcpHelpVisible, setMcpHelpVisible] = useState(false);
   const [mcpConfigTab, setMcpConfigTab] = useState('trae');
-  // XBH_AI_PATCH_START
   // AI 分析状态
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
@@ -113,19 +102,14 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   const aiListenersRef = useRef([]);
   const aiContentRef = useRef('');
   const aiResizingRef = useRef(false);
-  // XBH_AI_PATCH_START
   // AI 自动诊断状态
   const [autoDiagnoseEnabled, setAutoDiagnoseEnabled] = useState(true);
   const [autoDiagnoseAlert, setAutoDiagnoseAlert] = useState(null); // { issues, summary, timestamp }
-  // $XBH_AI_PATCH_START
   // 日志诊断规则库弹窗状态
   const [ruleLibraryOpen, setRuleLibraryOpen] = useState(false);
-  // $XBH_AI_PATCH_END
   const autoDiagnoseListenersRef = useRef([]);
   // 缓存最后一次检测到异常的 alert，用于"展开监控"时恢复显示（而非显示空状态）
   const lastAutoDiagnoseAlertRef = useRef(null);
-  // XBH_AI_PATCH_END
-  // XBH_AI_PATCH_START
   // 智能日志搜索状态
   const [smartSearchQuery, setSmartSearchQuery] = useState('');
   const [smartSearching, setSmartSearching] = useState(false);
@@ -134,15 +118,12 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   const [smartSearchMatchedIds, setSmartSearchMatchedIds] = useState(new Set()); // 匹配的 entry ID 集合
   const [smartSearchIncremental, setSmartSearchIncremental] = useState([]); // 增量累积的匹配条目（流式显示）
   const smartSearchListenersRef = useRef([]);
-  // XBH_AI_PATCH_START
   // 当前搜索会话 ID：用于过滤旧搜索会话的事件，防止"停止→重新搜索"时
   // 旧搜索的 complete/chunk/progress 事件污染新搜索状态
   const searchSessionRef = useRef(0);
-  // XBH_AI_PATCH_END
   const logListenersRef = useRef([]);
   const deferredFilter = useDeferredValue(filter);
   const logEndRef = useRef(null);
-  // XBH_AI_PATCH_START
   // H7: onResizeStart 全局监听器泄漏修复 - 存储 mousemove/mouseup 监听器，组件卸载时清理
   const resizeListenersRef = useRef(null);
   // H6: 列宽拖拽 requestAnimationFrame 节流
@@ -158,8 +139,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   const autoScrollRef = useRef(true);
   // UX1: note 自动清除定时器
   const noteTimerRef = useRef(null);
-  // XBH_AI_PATCH_END
-  // XBH_AI_PATCH_START
   // 多缓冲区抓取：默认仅 main（与原行为一致）
   // 可选项：main / system / radio / events / crash / kernel
   const LOG_BUFFERS = [
@@ -174,16 +153,13 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   const [bufferDropdownOpen, setBufferDropdownOpen] = useState(false);
   // 下拉外部点击关闭用的 ref
   const bufferDropdownRef = useRef(null);
-  // XBH_AI_PATCH_START
   // 设备选择自定义下拉
   const [deviceDropdownOpen, setDeviceDropdownOpen] = useState(false);
   const deviceDropdownRef = useRef(null);
   // 最小级别自定义下拉
   const [levelDropdownOpen, setLevelDropdownOpen] = useState(false);
   const levelDropdownRef = useRef(null);
-  // XBH_AI_PATCH_END
 
-  // XBH_AI_PATCH_START
   // 日志列表列宽可拖拽调整（每列有 min/max 限制）
   // 列顺序：时间 | 级别 | 包名 | Tag | 消息
   const [colWidths, setColWidths] = useState({
@@ -207,14 +183,11 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     document.body.style.cursor = 'col-resize';
   }
 
-  // XBH_AI_PATCH_START
   // 同步 running 状态到 ref，供 useEffect 内的事件回调读取
   useEffect(() => {
     runningRef.current = running;
   }, [running]);
-  // XBH_AI_PATCH_END
 
-  // XBH_AI_PATCH_START
   // 下拉菜单外部点击关闭（buffers 下拉 + device 下拉 + level 下拉）
   useEffect(() => {
     if (!bufferDropdownOpen && !deviceDropdownOpen && !levelDropdownOpen) return;
@@ -233,7 +206,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [bufferDropdownOpen, deviceDropdownOpen, levelDropdownOpen]);
-  // XBH_AI_PATCH_END
 
   useEffect(() => {
     function onMouseMove(ev) {
@@ -245,24 +217,20 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       const limits = { ts: [100, 220], pkg: [60, 200], tag: [50, 200] };
       const [min, max] = limits[col] || [50, 300];
       newWidth = Math.max(min, Math.min(max, newWidth));
-      // XBH_AI_PATCH_START
       // H6: 使用 requestAnimationFrame 节流，避免每次 mousemove 都触发 setColWidths 重渲染
       if (colResizeRafRef.current != null) return;
       colResizeRafRef.current = requestAnimationFrame(() => {
         colResizeRafRef.current = null;
         setColWidths(prev => ({ ...prev, [col]: newWidth }));
       });
-      // XBH_AI_PATCH_END
     }
     function onMouseUp() {
       if (colResizeRef.current) {
-        // XBH_AI_PATCH_START
         // H6: 取消 pending raf，确保最终状态正确
         if (colResizeRafRef.current != null) {
           cancelAnimationFrame(colResizeRafRef.current);
           colResizeRafRef.current = null;
         }
-        // XBH_AI_PATCH_END
         colResizeRef.current = null;
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
@@ -275,10 +243,8 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       document.removeEventListener('mouseup', onMouseUp);
     };
   }, []);
-  // XBH_AI_PATCH_END
 
   const filtered = useMemo(() => {
-    // XBH_AI_PATCH_START
     // 智能搜索模式：搜索中显示增量结果，搜索完成显示最终结果
     if (smartSearching && smartSearchIncremental.length > 0) {
       return smartSearchIncremental;
@@ -286,19 +252,16 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     if (smartSearchResult && smartSearchResult.matchedEntries.length > 0) {
       return smartSearchResult.matchedEntries;
     }
-    // XBH_AI_PATCH_END
     return filterEntries(entries, deferredFilter);
   }, [entries, deferredFilter, smartSearchResult, smartSearching, smartSearchIncremental]);
 
   const counts = useMemo(() => countByLevel(filtered), [filtered]);
 
   useEffect(() => {
-    // XBH_AI_PATCH_START
     // L1: 仅在用户已处于底部时自动滚动，避免打断用户浏览；behavior 改为 'auto' 减少动画堆叠
     if (autoScrollRef.current && logEndRef.current) {
       logEndRef.current.scrollIntoView({ behavior: 'auto' });
     }
-    // XBH_AI_PATCH_END
   }, [filtered.length]);
 
   useEffect(() => {
@@ -337,7 +300,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           console.error('Failed to get MCP info:', e);
         }
       }
-      // XBH_AI_PATCH_START
       // 拉取 VIP 状态（独立窗口场景）
       try {
         if (window.electronAPI?.vipGetStatus) {
@@ -345,7 +307,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           setVipStatusState(vs);
         }
       } catch { /* 静默 */ }
-      // XBH_AI_PATCH_END
     }
 
     function setupLogListeners() {
@@ -356,11 +317,9 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           setEntries(payload.entries || []);
           setTruncated(!!payload.truncated);
           setNote(undefined);
-          // XBH_AI_PATCH_START
           // 日志重置（开始抓取/清空/加载文件）时重置自动滚动标志，
           // 确保新日志到来时自动跟随到底部
           autoScrollRef.current = true;
-          // XBH_AI_PATCH_END
         });
         listeners.push(offReset);
       }
@@ -378,7 +337,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       logListenersRef.current = listeners;
     }
 
-    // XBH_AI_PATCH_START
     // AI 流式事件监听
     function setupAiListeners() {
       const listeners = [];
@@ -423,9 +381,7 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       aiListenersRef.current = listeners;
     }
     setupAiListeners();
-    // XBH_AI_PATCH_END
 
-    // XBH_AI_PATCH_START
     // AI 自动诊断事件监听
     function setupAutoDiagnoseListeners() {
       const listeners = [];
@@ -455,10 +411,8 @@ export default function LogAnalyzer({ theme, vipStatus }) {
             const prevIssues = (prev && !prev.monitoring) ? prev.issues : [];
             const prevSummary = (prev && !prev.monitoring) ? prev.summary : { total: 0 };
             const mergedIssues = [...prevIssues, ...payload.issues];
-            // XBH_AI_PATCH_START
             // M7: issues 添加上限 50 个，超过时丢弃最旧的
             if (mergedIssues.length > 50) mergedIssues.splice(0, mergedIssues.length - 50);
-            // XBH_AI_PATCH_END
             const mergedSummary = { ...prevSummary };
             for (const [k, v] of Object.entries(payload.summary)) {
               mergedSummary[k] = (mergedSummary[k] || 0) + v;
@@ -470,18 +424,15 @@ export default function LogAnalyzer({ theme, vipStatus }) {
               timestamp: payload.timestamp,
               monitoring: false
             };
-            // XBH_AI_PATCH_START
             // 缓存最后一次检测到异常的 alert，用于"展开监控"恢复显示
             if (mergedIssues.length > 0) {
               lastAutoDiagnoseAlertRef.current = nextAlert;
             }
-            // XBH_AI_PATCH_END
             return nextAlert;
           });
         });
         listeners.push(offDetected);
       }
-      // XBH_AI_PATCH_START
       // 监听扫描完成事件：扫描结束后若无问题且非实时捕获，从"监控中"切换到"扫描完成（无异常）"
       if (window.electronAPI && window.electronAPI.onAutoDiagnoseScanComplete) {
         const offScanComplete = window.electronAPI.onAutoDiagnoseScanComplete((payload) => {
@@ -502,23 +453,18 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         });
         listeners.push(offScanComplete);
       }
-      // XBH_AI_PATCH_END
       autoDiagnoseListenersRef.current = listeners;
     }
     setupAutoDiagnoseListeners();
-    // XBH_AI_PATCH_END
 
-    // XBH_AI_PATCH_START
     // 智能日志搜索：监听搜索进度和结果
     function setupSmartSearchListeners() {
       const listeners = [];
       if (window.electronAPI) {
         if (window.electronAPI.onSmartSearchStart) {
           const off = window.electronAPI.onSmartSearchStart((payload) => {
-            // XBH_AI_PATCH_START
             // 会话 ID 过滤：忽略旧搜索会话的事件，防止"停止→重新搜索"时旧事件污染新搜索
             if (payload.sessionId !== searchSessionRef.current) return;
-            // XBH_AI_PATCH_END
             setSmartSearching(true);
             setSmartSearchProgress({ completed: 0, total: payload.totalChunks, matchedCount: 0 });
             setSmartSearchResult(null);
@@ -529,42 +475,32 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         }
         if (window.electronAPI.onSmartSearchProgress) {
           const off = window.electronAPI.onSmartSearchProgress((payload) => {
-            // XBH_AI_PATCH_START
             // 会话 ID 过滤：忽略旧搜索会话的进度事件
             if (payload.sessionId !== searchSessionRef.current) return;
-            // XBH_AI_PATCH_END
             setSmartSearchProgress(payload);
           });
           listeners.push(off);
         }
-        // XBH_AI_PATCH_START
         // 增量推送：每完成一个分块就追加匹配条目，用户能看到结果逐步出现
         if (window.electronAPI.onSmartSearchChunk) {
           const off = window.electronAPI.onSmartSearchChunk((payload) => {
-            // XBH_AI_PATCH_START
             // 会话 ID 过滤：忽略旧搜索会话的分块结果，防止旧结果混入新搜索
             if (payload.sessionId !== searchSessionRef.current) return;
-            // XBH_AI_PATCH_END
-            // XBH_AI_PATCH_START
             // M6: 增量结果添加上限 5000 条，超过时丢弃最旧的
             setSmartSearchIncremental((prev) => {
               const merged = [...prev, ...payload.entries];
               if (merged.length > 5000) return merged.slice(merged.length - 5000);
               return merged;
             });
-            // XBH_AI_PATCH_END
           });
           listeners.push(off);
         }
-        // XBH_AI_PATCH_END
         if (window.electronAPI.onSmartSearchComplete) {
           const off = window.electronAPI.onSmartSearchComplete((payload) => {
-            // XBH_AI_PATCH_START
             // 会话 ID 过滤：忽略旧搜索会话的完成事件
             // 关键修复：旧搜索被停止后仍会发送 complete 事件，若不过滤会错误地
             // 将 smartSearching 置为 false，中断新搜索，并清空增量结果导致"匹配 0 条"
             if (payload.sessionId !== searchSessionRef.current) return;
-            // XBH_AI_PATCH_END
             setSmartSearching(false);
             setSmartSearchProgress(null);
             setSmartSearchIncremental([]); // 清空增量列表，使用最终结果
@@ -572,10 +508,8 @@ export default function LogAnalyzer({ theme, vipStatus }) {
               setSmartSearchResult(payload);
               const idSet = new Set(payload.matchedEntries.map(e => e.id));
               setSmartSearchMatchedIds(idSet);
-              // XBH_AI_PATCH_START
               // 搜索完成后同步重新扫描自动诊断，保持与显示区域一致
               rescanAutoDiagnose(payload.matchedEntries, 'search');
-              // XBH_AI_PATCH_END
             }
           });
           listeners.push(off);
@@ -584,19 +518,15 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       smartSearchListenersRef.current = listeners;
     }
     setupSmartSearchListeners();
-    // XBH_AI_PATCH_END
 
     refreshDevices();
     loadInitialState();
 
     return () => {
       logListenersRef.current.forEach(off => off && off());
-      // XBH_AI_PATCH_START
       aiListenersRef.current.forEach(off => off && off());
       autoDiagnoseListenersRef.current.forEach(off => off && off());
       smartSearchListenersRef.current.forEach(off => off && off());
-      // XBH_AI_PATCH_END
-      // XBH_AI_PATCH_START
       // H7: 清理可能残留的 onResizeStart 全局监听器（拖拽过程中卸载时）
       if (resizeListenersRef.current) {
         document.removeEventListener('mousemove', resizeListenersRef.current.onMouseMove);
@@ -620,35 +550,27 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         clearTimeout(noteTimerRef.current);
         noteTimerRef.current = null;
       }
-      // XBH_AI_PATCH_END
     };
   }, []);
 
   async function onStart() {
-    // XBH_AI_PATCH_START
     // M13: 加载状态
     setLoading(true);
-    // XBH_AI_PATCH_END
     setNote('启动中…');
     if (window.electronAPI && window.electronAPI.adbStartLog) {
       try {
-        // XBH_AI_PATCH_START
         // 传递用户选择的缓冲区（默认 ['main']）
         const startArgs = { deviceId: deviceId || undefined };
         if (buffers && buffers.length > 0) {
           startArgs.buffers = buffers;
         }
-        // XBH_AI_PATCH_END
         const res = await window.electronAPI.adbStartLog(startArgs);
         if (res.ok) {
           setRunning(true);
           setSource('realtime');
           setNote(undefined);
-          // XBH_AI_PATCH_START
           // 开始抓取时重置自动滚动，确保新日志自动跟随到底部
           autoScrollRef.current = true;
-          // XBH_AI_PATCH_END
-          // XBH_AI_PATCH_START
           // 开始抓取时切换到"监控中"状态（实时监控 incoming logs）
           if (autoDiagnoseEnabled) {
             setAutoDiagnoseAlert({
@@ -658,7 +580,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
               monitoring: true
             });
           }
-          // XBH_AI_PATCH_END
         } else {
           setNote('启动失败（请确认已安装 adb 且设备已授权）');
         }
@@ -666,10 +587,8 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         setNote('启动失败: ' + e.message);
       }
     }
-    // XBH_AI_PATCH_START
     // M13: 加载状态
     setLoading(false);
-    // XBH_AI_PATCH_END
   }
 
   async function onStop() {
@@ -677,13 +596,10 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       await window.electronAPI.adbStopLog();
     }
     setRunning(false);
-    // XBH_AI_PATCH_START
     // UX1: 操作反馈，3 秒后自动清除
     setNote('已停止抓取');
     if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
     noteTimerRef.current = setTimeout(() => setNote(undefined), 3000);
-    // XBH_AI_PATCH_END
-    // XBH_AI_PATCH_START
     // 停止抓取后：若当前处于"监控中"（无问题），切换到"扫描完成（无异常）"状态
     // 若已检测到问题，保持问题窗口不变
     if (autoDiagnoseEnabled) {
@@ -699,14 +615,11 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         return prev;
       });
     }
-    // XBH_AI_PATCH_END
   }
 
   async function onOpenFile() {
-    // XBH_AI_PATCH_START
     // M13: 加载状态
     setLoading(true);
-    // XBH_AI_PATCH_END
     setRunning(false);
     setNote('读取文件中…');
     if (window.electronAPI && window.electronAPI.logOpenFile) {
@@ -715,7 +628,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         if (res && res.ok) {
           setSource('file');
           setNote(`已加载：${res.shown?.toLocaleString?.() ?? ''}/${res.total?.toLocaleString?.() ?? ''}`);
-          // XBH_AI_PATCH_START
           // 文件加载完成：切换到"监控中"（主进程会扫描文件，扫描完成后通过
           // scan-complete 事件自动切换到"扫描完成（无异常）"或"检测到问题"）
           if (autoDiagnoseEnabled) {
@@ -726,7 +638,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
               monitoring: true
             });
           }
-          // XBH_AI_PATCH_END
         } else {
           setNote(undefined);
         }
@@ -734,10 +645,8 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         setNote('打开文件失败: ' + e.message);
       }
     }
-    // XBH_AI_PATCH_START
     // M13: 加载状态
     setLoading(false);
-    // XBH_AI_PATCH_END
   }
 
   async function onClear() {
@@ -745,7 +654,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       await window.electronAPI.logClear({ source });
     }
     setEntries([]);
-    // XBH_AI_PATCH_START
     // UX1: 操作反馈，3 秒后自动清除
     setNote('已清空日志');
     if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
@@ -754,7 +662,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     setAutoDiagnoseAlert(null);
     // 清空日志时清除缓存的异常 alert，避免"展开监控"恢复已失效的旧诊断
     lastAutoDiagnoseAlertRef.current = null;
-    // XBH_AI_PATCH_END
   }
 
   function formatEntry(e) {
@@ -775,7 +682,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   }
 
   async function onExport() {
-    // XBH_AI_PATCH_START
     // M9: 分批处理避免大日志同步格式化卡顿，每 5000 条 yield 一次让出主线程
     setExporting(true);
     try {
@@ -800,7 +706,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     } finally {
       setExporting(false);
     }
-    // XBH_AI_PATCH_END
   }
 
   async function onCopyAll() {
@@ -810,7 +715,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   }
 
   async function onToggleMcp() {
-    // XBH_AI_PATCH: MCP - 非会员阻止
     if (!isVip) {
       setNote('MCP 服务为会员专属功能，请在会员中心开通');
       return;
@@ -826,7 +730,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     }
   }
 
-  // XBH_AI_PATCH_START
   // AI 日志分析
   async function onAiAnalyze() {
     if (filtered.length === 0) {
@@ -916,7 +819,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     }
   }
 
-  // XBH_AI_PATCH_START
   // AI 自动诊断处理
   async function onAutoDiagnoseConfirm() {
     if (!autoDiagnoseAlert) return;
@@ -981,9 +883,7 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       lastAutoDiagnoseAlertRef.current = null;
     }
   }
-  // XBH_AI_PATCH_END
 
-  // XBH_AI_PATCH_START
   // 智能日志搜索：发起搜索 / 中止搜索 / 清除结果
   async function onSmartSearch() {
     if (!smartSearchQuery.trim()) return;
@@ -992,16 +892,13 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       return;
     }
     if (window.electronAPI && window.electronAPI.smartSearch) {
-      // XBH_AI_PATCH_START
       // 递增会话 ID，使旧搜索会话的事件失效
       searchSessionRef.current += 1;
-      // XBH_AI_PATCH_END
       setSmartSearching(true);
       setSmartSearchProgress({ completed: 0, total: 0, matchedCount: 0 });
       setSmartSearchResult(null);
       setSmartSearchMatchedIds(new Set());
-      setSmartSearchIncremental([]); // XBH_AI_PATCH: 清空增量列表，避免旧会话残留
-      // XBH_AI_PATCH_START
+      setSmartSearchIncremental([]);
       // 点击搜索时立即重置自动诊断为"监控中"状态，不等搜索完成
       // 搜索完成后会通过 onSmartSearchComplete 用搜索结果重新扫描
       if (autoDiagnoseEnabled) {
@@ -1012,17 +909,14 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           monitoring: true
         });
       }
-      // XBH_AI_PATCH_END
       try {
         await window.electronAPI.smartSearch({ query: smartSearchQuery.trim(), source });
       } catch (e) {
         setSmartSearching(false);
         setSmartSearchProgress(null);
         setNote('智能搜索失败：' + (e.message || '未知错误'));
-        // XBH_AI_PATCH_START
         // 搜索失败，显示区域回到原日志，重新扫描恢复诊断
         rescanAutoDiagnose(null, source);
-        // XBH_AI_PATCH_END
       }
     }
   }
@@ -1033,13 +927,10 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     }
     setSmartSearching(false);
     setSmartSearchProgress(null);
-    // XBH_AI_PATCH_START
     // 搜索中止后显示区域返回原日志，同步重新扫描自动诊断
     rescanAutoDiagnose(null, source);
-    // XBH_AI_PATCH_END
   }
 
-  // XBH_AI_PATCH_START
   // 日志显示区域变更时重新扫描自动诊断（搜索完成 / 返回原日志）
   // entriesToScan: 要扫描的条目数组；为 null 时主进程使用 logStore
   // logSource: 日志源标识（'search' | 'realtime' | 'file'）
@@ -1069,12 +960,9 @@ export default function LogAnalyzer({ theme, vipStatus }) {
     // 退出搜索模式，返回原日志列表
     setSmartSearchResult(null);
     setSmartSearchMatchedIds(new Set());
-    // XBH_AI_PATCH_START
     // 返回原日志时同步重新扫描自动诊断，保持与显示区域一致
     rescanAutoDiagnose(null, source);
-    // XBH_AI_PATCH_END
   }
-  // XBH_AI_PATCH_END
 
   // 拖拽调整面板高度
   function onResizeStart(e) {
@@ -1095,20 +983,16 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       aiResizingRef.current = false;
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
-      // XBH_AI_PATCH_START
       // H7: 清空 ref，标记监听器已移除
       resizeListenersRef.current = null;
-      // XBH_AI_PATCH_END
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
     }
 
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
-    // XBH_AI_PATCH_START
     // H7: 存储监听器引用，组件卸载时可清理残留监听器
     resizeListenersRef.current = { onMouseMove, onMouseUp };
-    // XBH_AI_PATCH_END
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'ns-resize';
   }
@@ -1116,7 +1000,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   function onToggleFullscreen() {
     setAiFullscreen(!aiFullscreen);
   }
-  // XBH_AI_PATCH_END
 
   const isDark = t.primary === 'tech' || t.primary === 'cyan' || t.primary === 'blue';
 
@@ -1159,7 +1042,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
               无设备连接
             </span>
           ) : (
-            // XBH_AI_PATCH_START
             // 设备选择自定义下拉（替代原生 select，风格与缓冲区下拉一致）
             <div className="relative" ref={deviceDropdownRef}>
               <button
@@ -1198,10 +1080,8 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                 </div>
               )}
             </div>
-            // XBH_AI_PATCH_END
           )}
 
-          {/* XBH_AI_PATCH_START */}
           {/* 日志缓冲区多选下拉：默认 main，可选 system/radio/events/crash/kernel */}
           <div className="relative" ref={bufferDropdownRef}>
             <button
@@ -1263,15 +1143,12 @@ export default function LogAnalyzer({ theme, vipStatus }) {
               </div>
             )}
           </div>
-          {/* XBH_AI_PATCH_END */}
 
           {!running ? (
             <button
               onClick={onStart}
-              // XBH_AI_PATCH_START
               // M13: 加载中禁用
               disabled={(devices.length === 0 && !running) || loading}
-              // XBH_AI_PATCH_END
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg transition-all disabled:opacity-50 active:scale-95 shadow-sm ${t.button.primary}`}
             >
               <Play size={14} />
@@ -1280,10 +1157,8 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           ) : (
             <button
               onClick={onStop}
-              // XBH_AI_PATCH_START
               // M13: 加载中禁用
               disabled={loading}
-              // XBH_AI_PATCH_END
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-red-500 hover:bg-red-600 text-white transition-all disabled:opacity-50 active:scale-95 shadow-sm"
             >
               <Square size={14} />
@@ -1293,17 +1168,14 @@ export default function LogAnalyzer({ theme, vipStatus }) {
 
           <button
             onClick={onOpenFile}
-            // XBH_AI_PATCH_START
             // M13: 加载中禁用
             disabled={loading}
-            // XBH_AI_PATCH_END
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors disabled:opacity-50 ${isDark ? 'border-slate-500 hover:bg-[#3E4145] text-[#E8EAED] active:scale-95 shadow-sm' : 'border-slate-300 hover:bg-slate-100 text-slate-700 active:scale-95 shadow-sm'}`}
             title="打开 .log 日志文件"
           >
             <FolderOpen size={16} />
           </button>
 
-          {/* XBH_AI_PATCH_START */}
           {/* 次要操作按钮：导出 / 复制 / 清空（清空为红色警示），紧跟打开日志文件按钮右侧 */}
           <button
             onClick={onExport}
@@ -1331,7 +1203,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           >
             <Trash2 size={14} />
           </button>
-          {/* XBH_AI_PATCH_END */}
 
           <div className="flex-1" />
 
@@ -1346,7 +1217,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
 
         {/* 第二行：智能搜索 + AI 分析 + 自动诊断 + MCP + 更多菜单 */}
         <div className="flex items-center gap-4 flex-wrap">
-          {/* XBH_AI_PATCH_START */}
           {/* 智能日志搜索（会员专属，非会员隐藏） */}
           {isVip ? (
           <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border ${isDark ? 'border-violet-500/30 bg-violet-500/10' : 'border-violet-300 bg-violet-50'}`}>
@@ -1417,12 +1287,10 @@ export default function LogAnalyzer({ theme, vipStatus }) {
               返回原日志（{smartSearchResult.matchedCount} 条）
             </button>
           )}
-          {/* XBH_AI_PATCH_END */}
 
           {/* AI 分析按钮 */}
           <button
             onClick={() => {
-              // XBH_AI_PATCH: VIP 门控
               if (!isVip) { showVipBlock('AI 深度分析'); return; }
               if (filtered.length === 0) {
                 setNoteType('error');
@@ -1448,7 +1316,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
             自动诊断: {autoDiagnoseEnabled ? 'ON' : 'OFF'}
           </button>
 
-          {/* $XBH_AI_PATCH_START */}
           {/* 日志诊断规则库入口 */}
           <button
             onClick={() => setRuleLibraryOpen(true)}
@@ -1458,12 +1325,10 @@ export default function LogAnalyzer({ theme, vipStatus }) {
             <Layers size={14} />
             规则库
           </button>
-          {/* $XBH_AI_PATCH_END */}
 
           {/* 自动诊断已开启但监控窗口被隐藏时，显示"展开监控"按钮 */}
           {autoDiagnoseEnabled && !autoDiagnoseAlert && (
             <button
-              // XBH_AI_PATCH_START
               // 恢复监控窗口：优先恢复缓存的异常诊断；无缓存时显示"监控中"/"扫描完成（无异常）"
               onClick={() => {
                 if (lastAutoDiagnoseAlertRef.current) {
@@ -1478,7 +1343,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                   });
                 }
               }}
-              // XBH_AI_PATCH_END
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${isDark ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : 'border-emerald-400 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'}`}
               title="展开自动诊断监控窗口"
             >
@@ -1487,18 +1351,15 @@ export default function LogAnalyzer({ theme, vipStatus }) {
             </button>
           )}
 
-          {/* XBH_AI_PATCH_START */}
           {/* 状态提示：读取文件中 / 已停止抓取 等，紧跟自动诊断右侧 */}
           {note && (
             <div className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${noteType === 'error' ? (isDark ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-red-50 text-red-600 border border-red-200') : (isDark ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-blue-50 text-blue-600 border border-blue-200')}`}>
               {note}
             </div>
           )}
-          {/* XBH_AI_PATCH_END */}
 
           <div className="flex-1" />
 
-          {/* XBH_AI_PATCH: MCP 区域非会员隐藏 */}
           {isVip ? (<>
           <button
             onClick={() => setMcpHelpVisible(true)}
@@ -1534,14 +1395,12 @@ export default function LogAnalyzer({ theme, vipStatus }) {
               <button
                 onClick={() => {
                   setFilter(emptyFilter);
-                  // XBH_AI_PATCH_START
                   // M8: 同步重置本地输入状态
                   setFilterTextInput('');
                   if (filterDebounceRef.current) {
                     clearTimeout(filterDebounceRef.current);
                     filterDebounceRef.current = null;
                   }
-                  // XBH_AI_PATCH_END
                 }}
                 className={`text-xs px-2 py-1 rounded transition-colors ${isDark ? 'text-[#9AA0A6] hover:text-[#E8EAED] hover:bg-[#3E4145]' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'}`}
               >
@@ -1557,7 +1416,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                   value={filterTextInput}
                   placeholder="包含文本"
                   onChange={(e) => {
-                    // XBH_AI_PATCH_START
                     // M8: 本地状态立即更新保持输入响应，setFilter 防抖 300ms
                     const val = e.target.value;
                     setFilterTextInput(val);
@@ -1565,7 +1423,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                     filterDebounceRef.current = setTimeout(() => {
                       setFilter((prev) => ({ ...prev, text: val || undefined }));
                     }, 300);
-                    // XBH_AI_PATCH_END
                   }}
                   className={`w-full text-xs px-3 py-2 rounded-lg border outline-none focus:ring-2 focus:ring-emerald-500 ${isDark ? 'bg-[#3E4145] border-[#5F6368] text-[#E8EAED] placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
                 />
@@ -1632,7 +1489,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
 
               <div>
                 <label className={`block text-xs mb-1 ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>最小级别</label>
-                {/* XBH_AI_PATCH_START */}
                 {/* 自定义下拉框，参考设备/缓冲区下拉风格，带级别颜色 */}
                 <div className="relative" ref={levelDropdownRef}>
                   <button
@@ -1677,7 +1533,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                     </div>
                   )}
                 </div>
-                {/* XBH_AI_PATCH_END */}
               </div>
 
               <div className={`text-xs ${isDark ? 'text-[#80868B]' : 'text-slate-400'}`}>
@@ -1711,7 +1566,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         <div className={`flex-1 flex flex-col ${isDark ? 'bg-[#202124]' : 'bg-white'}`}>
           <div className={`flex items-center justify-between px-4 py-2 border-b ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
             <span className={`text-sm font-bold ${isDark ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
-              {/* XBH_AI_PATCH_START */}
               {smartSearching && smartSearchIncremental.length > 0
                 ? <span className="flex items-center gap-2">
                     <Loader2 size={14} className="text-violet-500 animate-spin" />
@@ -1724,14 +1578,12 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                     </span>
                   : (source === 'realtime' ? '实时日志' : '文件日志'))
               }
-              {/* XBH_AI_PATCH_END */}
             </span>
             <span className={`text-xs ${isDark ? 'text-[#80868B]' : 'text-slate-400'}`}>
               双击一行即可复制 · 悬停可查看完整消息 · 拖拽列边界调整宽度
             </span>
           </div>
 
-          {/* XBH_AI_PATCH_START: 可拖拽列宽表头 */}
           <div
             className={`flex items-center px-4 py-1.5 border-b text-xs font-bold ${isDark ? 'bg-[#2A2C2F] border-[#3E4145] text-[#9AA0A6]' : 'bg-slate-50 border-slate-200 text-slate-500'}`}
             style={{ display: 'grid', gridTemplateColumns: `${colWidths.ts}px ${colWidths.level}px ${colWidths.pkg}px ${colWidths.tag}px 1fr`, gap: '8px' }}
@@ -1760,19 +1612,15 @@ export default function LogAnalyzer({ theme, vipStatus }) {
             </span>
             <span>消息</span>
           </div>
-          {/* XBH_AI_PATCH_END */}
 
           <div
             className="flex-1 overflow-y-auto font-mono text-xs"
-            // XBH_AI_PATCH_START
             // L1: 检测用户是否在底部，更新 autoScrollRef
             onScroll={(e) => {
               const el = e.currentTarget;
               autoScrollRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
             }}
-            // XBH_AI_PATCH_END
           >
-            {/* XBH_AI_PATCH_START: 搜索中加载状态（3秒内立即显示，让用户感知正在工作） */}
             {loading ? (
               <div className={`flex flex-col items-center justify-center h-full ${isDark ? 'text-cyan-400' : 'text-cyan-600'}`}>
                 <Loader2 size={32} className="mb-3 animate-spin" />
@@ -1816,15 +1664,12 @@ export default function LogAnalyzer({ theme, vipStatus }) {
         </div>
       </div>
 
-      {/* XBH_AI_PATCH_START: AI 自动诊断提示 Toast（监控中 / 扫描完成无异常 / 检测到问题 三种状态） */}
       {autoDiagnoseAlert && (
         (() => {
-          // XBH_AI_PATCH_START
           // 三态判定：monitoring（实时监控中）/ clean（扫描完成无异常）/ issues（检测到问题）
           const isMonitoring = autoDiagnoseAlert.monitoring;
           const hasIssues = !isMonitoring && autoDiagnoseAlert.summary.total > 0;
           const isClean = !isMonitoring && autoDiagnoseAlert.summary.total === 0;
-          // XBH_AI_PATCH_END
           return (
         <div
           className={`max-w-md animate-in fade-in slide-in-from-bottom-2 ${
@@ -1841,24 +1686,18 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           }
         >
           <div className={`rounded-xl border shadow-2xl overflow-hidden ${
-            // XBH_AI_PATCH_START
             // 三态配色：monitoring/clean=emerald，issues=amber
             (isMonitoring || isClean)
               ? (isDark ? 'bg-[#2D2F33] border-emerald-500/40' : 'bg-white border-emerald-400')
               : (isDark ? 'bg-[#2D2F33] border-amber-500/40' : 'bg-white border-amber-400')
-            // XBH_AI_PATCH_END
           }`}>
             <div className="flex items-start gap-3 p-4">
               <div className="flex-shrink-0 mt-0.5">
                 <div className={`w-9 h-9 rounded-full flex items-center justify-center ${
-                  // XBH_AI_PATCH_START
                   (isMonitoring || isClean)
                     ? (isDark ? 'bg-emerald-500/20' : 'bg-emerald-100')
                     : (isDark ? 'bg-amber-500/20' : 'bg-amber-100')
-                  // XBH_AI_PATCH_END
                 }`}>
-                  {/* XBH_AI_PATCH_START
-                      三态图标：monitoring=Loader2旋转 / clean=CheckCircle / issues=AlertTriangle */}
                   {isMonitoring ? (
                     <Loader2 size={18} className="text-emerald-500 animate-spin" />
                   ) : isClean ? (
@@ -1866,23 +1705,17 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                   ) : (
                     <AlertTriangle size={18} className="text-amber-500" />
                   )}
-                  {/* XBH_AI_PATCH_END */}
                 </div>
               </div>
               <div className="flex-1 min-w-0">
                 <div className={`text-sm font-bold ${isDark ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
-                  {/* XBH_AI_PATCH_START
-                      三态标题：监控中 / 当前没有检测到异常 / 检测到 N 个问题 */}
                   {isMonitoring
                     ? '自动诊断监控中'
                     : isClean
                       ? '当前没有检测到异常'
                       : `检测到 ${autoDiagnoseAlert.summary.total} 个关键问题`
                   }
-                  {/* XBH_AI_PATCH_END */}
                 </div>
-                {/* XBH_AI_PATCH_START
-                    三态副标题：monitoring=监控说明 / clean=扫描完成说明 / issues=问题标签 */}
                 {isMonitoring ? (
                   <div className={`text-xs mt-1 ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>
                     正在实时监控崩溃 / ANR / OOM / Native Crash 等关键问题，暂未发现问题
@@ -1913,14 +1746,10 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                     )}
                   </div>
                 )}
-                {/* XBH_AI_PATCH_END */}
                 <div className="flex items-center gap-2 mt-3">
-                  {/* XBH_AI_PATCH_START
-                      AI 分析按钮仅在 issues 状态显示，clean 状态不显示（无问题可分析） */}
                   {hasIssues && (
                     <button
                       onClick={() => {
-                        // XBH_AI_PATCH: VIP 门控
                         if (!isVip) { showVipBlock('AI 深度分析'); return; }
                         onAutoDiagnoseConfirm();
                       }}
@@ -1931,15 +1760,11 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                       {aiAnalyzing ? '分析中…' : 'AI 分析'}
                     </button>
                   )}
-                  {/* XBH_AI_PATCH_END */}
                   <button
                     onClick={onAutoDiagnoseDismiss}
                     className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-[#3E4145]' : 'text-slate-500 hover:bg-slate-100'}`}
                   >
-                    {/* XBH_AI_PATCH_START
-                        三态按钮文案：monitoring=隐藏 / clean=忽略 / issues=忽略 */}
                     {isMonitoring ? '隐藏' : '忽略'}
-                    {/* XBH_AI_PATCH_END */}
                   </button>
                 </div>
               </div>
@@ -1955,9 +1780,7 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           );
         })()
       )}
-      {/* XBH_AI_PATCH_END */}
 
-      {/* XBH_AI_PATCH_START: AI 分析面板 */}
       {aiPanelOpen && (
         <>
           {/* 全屏遮罩 */}
@@ -2094,7 +1917,6 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           </div>
         </>
       )}
-      {/* XBH_AI_PATCH_END */}
 
       {mcpHelpVisible && (
         <div
@@ -2128,13 +1950,13 @@ export default function LogAnalyzer({ theme, vipStatus }) {
             <div className="px-6 py-5 overflow-y-auto flex-1 space-y-5">
               {/* Intro */}
               <div className={`text-xs leading-relaxed ${isDark ? 'text-[#9AA0A6]' : 'text-slate-600'}`}>
-                MCP 服务让 AI 工具（Claude CLI、Cursor、Trae 等）能够直接读取和控制本应用的日志抓取，无需手动复制粘贴日志。
+                MCP 服务让 AI 工具（Claude CLI、Cursor、Trae 等）能够直接读取和控制本应用的日志、应用包、性能采样和设备巡检能力，无需手动复制粘贴结果。
               </div>
 
               {/* Tool Groups */}
               {[
                 {
-                  title: '设备控制',
+                  title: '设备与日志控制',
                   icon: '🎮',
                   color: isDark ? 'emerald' : 'emerald',
                   tools: [
@@ -2142,6 +1964,24 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                     { name: 'capture_start', desc: '选择设备并开始抓取日志', extra: '可选 buffers 指定缓冲区：main / system / radio / events / crash / kernel' },
                     { name: 'capture_stop', desc: '停止当前抓取' },
                     { name: 'log_clear', desc: '清空日志' },
+                  ],
+                },
+                {
+                  title: '应用包管理',
+                  icon: '📦',
+                  color: 'amber',
+                  tools: [
+                    { name: 'package_list', desc: '列出指定设备已安装应用', extra: '默认返回用户应用；showSystem=true 时包含系统应用' },
+                    { name: 'package_detail', desc: '读取应用版本、路径、安装时间、启停状态和权限摘要' },
+                  ],
+                },
+                {
+                  title: '性能与巡检',
+                  icon: '📊',
+                  color: 'rose',
+                  tools: [
+                    { name: 'perf_snapshot', desc: '执行一次性能采样', extra: '返回 CPU、内存、存储空间、电池、温度、FPS 和告警' },
+                    { name: 'inspection_run', desc: '执行标准设备巡检并导出报告与证据包', extra: '支持 includeBugreport、includeAiSummary 和 outputBaseDir' },
                   ],
                 },
                 {
@@ -2299,7 +2139,6 @@ url = "http://127.0.0.1:${mcpPort}/mcp"`}
         </div>
       )}
 
-      {/* $XBH_AI_PATCH_START */}
       {/* 日志诊断规则库弹窗 */}
       <DiagnosticRuleLibrary
         theme={t}
@@ -2308,9 +2147,7 @@ url = "http://127.0.0.1:${mcpPort}/mcp"`}
         isVip={isVip}
         onVipRequired={showVipBlock}
       />
-      {/* $XBH_AI_PATCH_END */}
 
-      {/* XBH_AI_PATCH_START: VIP 拦截弹窗 */}
       {vipBlockMsg && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
           <div className="p-6 rounded-xl shadow-2xl max-w-sm w-full mx-4 bg-[#2D2F33] border border-[#3E4145]">
@@ -2339,12 +2176,10 @@ url = "http://127.0.0.1:${mcpPort}/mcp"`}
           </div>
         </div>
       )}
-      {/* XBH_AI_PATCH_END */}
     </div>
   );
 }
 
-// XBH_AI_PATCH_START
 // H5: 使用 React.memo 避免不必要的重渲染（仅当 props 变化时才重新渲染）
 const LogRow = memo(function LogRow({ entry, isDark, colWidths, highlighted }) {
   const lvl = entry.level ?? 'V';
@@ -2352,12 +2187,10 @@ const LogRow = memo(function LogRow({ entry, isDark, colWidths, highlighted }) {
   const pkg = entry.pkg ?? '';
   const msg = entry.message ?? entry.raw;
 
-  // XBH_AI_PATCH_START
   // 使用动态列宽（与表头保持一致），消息列自适应剩余空间
   const gridTemplate = colWidths
     ? `${colWidths.ts}px ${colWidths.level}px ${colWidths.pkg}px ${colWidths.tag}px 1fr`
     : '140px 28px minmax(60px,120px) minmax(50px,120px) 1fr';
-  // XBH_AI_PATCH_END
 
   return (
     <div
@@ -2388,20 +2221,16 @@ const LogRow = memo(function LogRow({ entry, isDark, colWidths, highlighted }) {
     </div>
   );
 });
-// XBH_AI_PATCH_END
 
-// XBH_AI_PATCH_START
 // 轻量 Markdown 渲染组件（用于 AI 分析结果展示）
 // 使用增量解析 + useDeferredValue 避免长文本时 UI 卡死
 function AiMarkdownRender({ content, isDark }) {
   // useDeferredValue: 让 React 在空闲时才渲染 Markdown，不阻塞用户交互
   const deferredContent = useDeferredValue(content);
-  // XBH_AI_PATCH_START
   // M10: parseMarkdown 缓存优化 - useMemo 本身已提供基于 deferredContent 的 memoization，
   // 内容相同时不会重新解析；useDeferredValue 进一步确保只在空闲时更新。
   // 注：不使用 ref 缓存，因为 React 19 不允许在 render 阶段（useMemo 内）访问 refs。
   const blocks = useMemo(() => parseMarkdown(deferredContent), [deferredContent]);
-  // XBH_AI_PATCH_END
   const endRef = useRef(null);
   const isStale = content !== deferredContent;
 
@@ -2641,4 +2470,3 @@ function parseMarkdown(content) {
 
   return blocks;
 }
-// XBH_AI_PATCH_END

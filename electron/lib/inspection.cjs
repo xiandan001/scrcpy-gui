@@ -1,4 +1,3 @@
-// $XBH_AI_PATCH_START
 // 设备巡检报告与证据包导出：独立主进程模块，避免扩大现有 ADB/日志模块职责
 
 const { app, shell } = require('electron');
@@ -8,6 +7,7 @@ const path = require('path');
 
 const ctx = require('./app-context.cjs');
 const vip = require('./vip.cjs');
+const aiAnalyze = require('./ai-analyze.cjs');
 const { getAppVersion } = require('./version.cjs');
 
 const STANDARD_TIMEOUT_MS = 15000;
@@ -15,8 +15,10 @@ const LONG_TIMEOUT_MS = 45000;
 const LOG_TIMEOUT_MS = 30000;
 const BUGREPORT_TIMEOUT_MS = 5 * 60 * 1000;
 const DEVICE_TEMP_SCREEN = '/sdcard/inspection-screen.png';
+const BUNDLED_ADB_PATH = path.join(__dirname, '../../scrcpy-win64/adb.exe');
 
 let currentTask = null;
+let lastTaskState = null;
 
 const STANDARD_STEPS = [
   { id: 'adb-devices', label: '检查 ADB 设备列表', kind: 'adb', args: ['devices', '-l'], file: 'adb-devices.txt', timeout: STANDARD_TIMEOUT_MS },
@@ -51,33 +53,60 @@ function register(ipcMain) {
     const deviceId = String(args?.deviceId || '').trim();
     if (!deviceId) return { ok: false, error: '设备 ID 不能为空' };
 
-    currentTask = {
+    const task = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       deviceId,
       sender: event.sender,
       cancelled: false,
-      currentProc: null
+      currentProc: null,
+      tracked: true,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      progress: null,
+      result: null
     };
+    currentTask = task;
+    lastTaskState = publicInspectionTask(task);
 
-    try {
-      return await runInspection(currentTask, {
+    runInspection(task, {
         deviceId,
         deviceLabel: args?.deviceLabel || deviceId,
         includeBugreport: !!args?.includeBugreport,
+        includeAiSummary: args?.includeAiSummary === true,
         outputBaseDir: args?.outputBaseDir
+      })
+      .catch((error) => {
+        const payload = { ok: false, error: error.message || '巡检异常', deviceId, outputDir: null, reportPath: null, zipPath: null };
+        task.status = 'failed';
+        task.result = payload;
+        lastTaskState = publicInspectionTask(task);
+        sendDone(task, payload);
+      })
+      .finally(() => {
+        if (currentTask === task) currentTask = null;
       });
-    } finally {
-      currentTask = null;
-    }
+
+    return { ok: true, task: publicInspectionTask(task) };
   });
 
   ipcMain.handle('inspection:cancel', async () => {
     if (!currentTask) return { ok: true, cancelled: false };
     currentTask.cancelled = true;
+    currentTask.status = 'cancelling';
+    lastTaskState = publicInspectionTask(currentTask);
     if (currentTask.currentProc) {
       try { currentTask.currentProc.kill(); } catch {}
     }
     return { ok: true, cancelled: true };
+  });
+
+  ipcMain.handle('inspection:state', async (event, args) => {
+    const deviceId = String(args?.deviceId || '').trim();
+    const task = currentTask ? publicInspectionTask(currentTask) : lastTaskState;
+    if (deviceId && task?.deviceId && task.deviceId !== deviceId) {
+      return { ok: true, task: null };
+    }
+    return { ok: true, task: task || null };
   });
 
   ipcMain.handle('inspection:openFolder', async (event, folderPath) => {
@@ -115,7 +144,8 @@ async function runInspection(task, options) {
     outputBaseDir: getOutputBaseDir(options.outputBaseDir),
     startedAt: startedAt.toISOString(),
     appVersion: getAppVersion(),
-    includeBugreport: options.includeBugreport
+    includeBugreport: options.includeBugreport,
+    includeAiSummary: options.includeAiSummary === true
   };
 
   const statePath = path.join(outputDir, 'metadata.json');
@@ -151,17 +181,23 @@ async function runInspection(task, options) {
   const endedAt = new Date();
   const reportPath = path.join(outputDir, 'inspection-report.md');
   const errorsPath = path.join(outputDir, 'errors.json');
+  const summaryPath = path.join(outputDir, 'summary.json');
+  const analysis = buildAnalysis(results, errors);
+  const aiSummary = options.includeAiSummary ? await buildInspectionAiSummary(state, results, errors, analysis) : { ok: false, skipped: true, summary: '' };
   const finalState = {
     ...state,
     endedAt: endedAt.toISOString(),
     cancelled,
     successCount: results.filter(r => r.ok).length,
     failedCount: errors.length,
+    analysis,
+    aiSummary,
     steps: results.map(r => ({ id: r.id, label: r.label, ok: r.ok, file: r.file || null, error: r.error || null }))
   };
 
   await writeJson(statePath, finalState);
   await writeJson(errorsPath, errors);
+  await writeJson(summaryPath, buildSummary(finalState, results, errors));
   await fs.promises.writeFile(reportPath, buildReport(finalState, results, errors, dirs), 'utf8');
 
   let zipPath = null;
@@ -173,6 +209,7 @@ async function runInspection(task, options) {
     zipError = e.message;
     errors.push({ id: 'zip', label: '证据包打包', error: zipError });
     await writeJson(errorsPath, errors);
+    await writeJson(summaryPath, buildSummary({ ...finalState, failedCount: errors.length }, results, errors));
     await fs.promises.writeFile(reportPath, buildReport({ ...finalState, failedCount: errors.length }, results, errors, dirs), 'utf8');
   }
 
@@ -184,7 +221,9 @@ async function runInspection(task, options) {
     zipPath,
     zipError,
     successCount: finalState.successCount,
-    failedCount: errors.length
+    failedCount: errors.length,
+    analysis,
+    aiSummary
   };
   sendDone(task, payload);
   return payload;
@@ -192,13 +231,16 @@ async function runInspection(task, options) {
 
 async function finishEarly(task, outputDir, state, errors, error) {
   errors.push({ id: 'preflight', label: '巡检预检查', error });
-  const finalState = { ...state, endedAt: new Date().toISOString(), cancelled: false, successCount: 0, failedCount: errors.length, steps: [] };
+  const analysis = buildAnalysis([], errors);
+  const aiSummary = state.includeAiSummary ? await buildInspectionAiSummary(state, [], errors, analysis) : { ok: false, skipped: true, summary: '' };
+  const finalState = { ...state, endedAt: new Date().toISOString(), cancelled: false, successCount: 0, failedCount: errors.length, analysis, aiSummary, steps: [] };
   const reportPath = path.join(outputDir, 'inspection-report.md');
   const errorsPath = path.join(outputDir, 'errors.json');
   await writeJson(path.join(outputDir, 'metadata.json'), finalState);
   await writeJson(errorsPath, errors);
+  await writeJson(path.join(outputDir, 'summary.json'), buildSummary(finalState, [], errors));
   await fs.promises.writeFile(reportPath, buildReport(finalState, [], errors, { root: outputDir, raw: path.join(outputDir, 'raw'), media: path.join(outputDir, 'media') }), 'utf8');
-  const payload = { ok: false, error, outputDir, reportPath, zipPath: null, successCount: 0, failedCount: errors.length };
+  const payload = { ok: false, error, outputDir, reportPath, zipPath: null, successCount: 0, failedCount: errors.length, analysis, aiSummary };
   sendDone(task, payload);
   return payload;
 }
@@ -271,7 +313,7 @@ async function captureBugreport(task, deviceId, step, bugreportDir) {
 }
 
 function runAdb(task, args, timeoutMs) {
-  return runProcess(task, 'adb', args, timeoutMs);
+  return runProcess(task, getAdbCommand(), args, timeoutMs);
 }
 
 function runProcess(task, command, args, timeoutMs) {
@@ -345,6 +387,14 @@ function buildReport(state, results, errors, dirs) {
     `- 失败项：${errors.length}`,
     `- 导出目录：${dirs.root}`,
     '',
+    '## 健康结论',
+    '',
+    `- 结论：${state.analysis?.summary || '未生成'}`,
+    `- 风险等级：${state.analysis?.severity || 'unknown'}`,
+    '',
+    ...((state.analysis?.findings || []).length === 0
+      ? ['- 未发现明确风险项', '']
+      : state.analysis.findings.map(item => `- [${item.severity}] ${item.label}：${item.detail}`).concat('')),
     '## 设备信息',
     '',
     `- 品牌：${prop(getprop, 'ro.product.brand') || '-'}`,
@@ -387,8 +437,128 @@ function buildReport(state, results, errors, dirs) {
     errors.forEach(e => lines.push(`- ${e.label || e.id}：${e.error || '未知错误'}`));
   }
 
-  lines.push('', '## 证据包说明', '', '- `raw/`：ADB 命令原始输出。', '- `media/`：屏幕截图等图片证据。', '- `bugreport/`：用户勾选后生成的 bugreport。', '- `metadata.json`：巡检元数据。', '- `errors.json`：失败项机器可读记录。', '');
+  lines.push(
+    '',
+    '## 证据包说明',
+    '',
+    '- `raw/`：ADB 命令原始输出。',
+    '- `media/`：屏幕截图等图片证据。',
+    '- `bugreport/`：用户勾选后生成的 bugreport。',
+    '- `metadata.json`：巡检元数据。',
+    '- `errors.json`：失败项机器可读记录。',
+    '',
+    '## AI 分析',
+    '',
+    ...formatAiAnalysisLines(state.aiSummary),
+    ''
+  );
   return lines.join('\n');
+}
+
+function buildSummary(state, results, errors) {
+  return {
+    appVersion: state.appVersion,
+    deviceId: state.deviceId,
+    startedAt: state.startedAt,
+    endedAt: state.endedAt,
+    cancelled: state.cancelled,
+    successCount: state.successCount,
+    failedCount: errors.length,
+    analysis: state.analysis,
+    aiSummary: state.aiSummary,
+    artifacts: results
+      .filter(item => item.file)
+      .map(item => ({ id: item.id, label: item.label, ok: item.ok, file: item.file, bytes: item.bytes || fileSize(item.file) }))
+  };
+}
+
+function formatAiAnalysisLines(aiSummary) {
+  if (!aiSummary || aiSummary.skipped) return ['- 未勾选 AI 分析'];
+  if (!aiSummary.ok) return [`- AI 分析未生成：${aiSummary.error || '未知错误'}`];
+  const lines = String(aiSummary.summary || '')
+    .split(/\r?\n/)
+    .map(line => line.trimEnd());
+  return lines.some(Boolean) ? lines : ['- AI 分析为空'];
+}
+
+function buildAnalysis(results, errors) {
+  const byId = Object.fromEntries(results.map(r => [r.id, r]));
+  const raw = (id) => readFileSafe(byId[id]?.file);
+  const findings = [];
+  const batteryTemp = Number(firstMatch(raw('battery'), /^\s*temperature:\s*(\d+)$/m));
+  const memAvailable = firstKb(raw('meminfo'), /^MemAvailable:\s*(\d+)\s+kB$/m);
+  const memTotal = firstKb(raw('meminfo'), /^MemTotal:\s*(\d+)\s+kB$/m);
+  const logcatCrash = raw('logcat-crash');
+  const logcatMain = raw('logcat-main');
+  const disk = raw('disk');
+
+  if (Number.isFinite(batteryTemp) && batteryTemp >= 450) {
+    findings.push({ severity: 'high', label: '设备温度偏高', detail: `${(batteryTemp / 10).toFixed(1)}°C` });
+  }
+  if (memTotal > 0 && memAvailable > 0) {
+    const availableRatio = memAvailable / memTotal;
+    if (availableRatio < 0.15) {
+      findings.push({ severity: 'medium', label: '可用内存偏低', detail: `可用 ${formatKbValue(memAvailable)} / 总计 ${formatKbValue(memTotal)}` });
+    }
+  }
+  if (/FATAL EXCEPTION|ANR in |native crash|Fatal signal/i.test(logcatCrash + '\n' + logcatMain)) {
+    findings.push({ severity: 'high', label: '日志中存在崩溃或 ANR 线索', detail: '请查看 raw/logcat-crash.txt 与 raw/logcat-main.txt' });
+  }
+  if (/(?:\s|^)(9[0-9]|100)%\s+\/data\b/m.test(disk)) {
+    findings.push({ severity: 'medium', label: '/data 分区使用率偏高', detail: '请查看 raw/df.txt' });
+  }
+  errors
+    .filter(item => item.id !== 'cancelled')
+    .slice(0, 5)
+    .forEach(item => findings.push({ severity: 'low', label: `${item.label || item.id} 未完成`, detail: item.error || '未知错误' }));
+
+  const severity = findings.some(item => item.severity === 'high')
+    ? 'high'
+    : findings.some(item => item.severity === 'medium')
+      ? 'medium'
+      : findings.length > 0 ? 'low' : 'normal';
+  const summary = severity === 'normal'
+    ? '标准巡检未发现明确风险项'
+    : `发现 ${findings.length} 个需要关注的风险项`;
+  return { severity, summary, findings };
+}
+
+async function buildInspectionAiSummary(state, results, errors, analysis) {
+  const artifacts = results
+    .filter(item => item.file)
+    .slice(0, 20)
+    .map(item => `- ${item.label}: ${item.ok ? '成功' : '失败'} ${item.file || ''} ${item.error || ''}`)
+    .join('\n');
+  const findings = (analysis.findings || [])
+    .map(item => `- [${item.severity}] ${item.label}: ${item.detail}`)
+    .join('\n') || '- 无';
+  const failures = errors
+    .slice(0, 12)
+    .map(item => `- ${item.label || item.id}: ${item.error || '未知错误'}`)
+    .join('\n') || '- 无';
+  const prompt = [
+    `设备 ID: ${state.deviceId}`,
+    `应用版本: ${state.appVersion}`,
+    `巡检结果: ${analysis.summary}`,
+    `风险等级: ${analysis.severity}`,
+    '',
+    '风险项:',
+    findings,
+    '',
+    '失败项:',
+    failures,
+    '',
+    '附件摘要:',
+    artifacts || '- 无',
+    '',
+    '请输出一段面向 Android 调试人员的巡检 AI 总结，包含：总体结论、优先关注项、下一步建议。不要编造未提供的证据。'
+  ].join('\n');
+  return aiAnalyze.generateAiSummary({
+    systemPrompt: '你是 Android 设备巡检报告助手，只根据给定巡检摘要输出简洁、可执行的中文结论。',
+    userContent: prompt,
+    timeoutMs: 60000,
+    temperature: 0.2
+  });
 }
 
 async function createZip(rootDir, zipPath) {
@@ -409,7 +579,7 @@ async function createZip(rootDir, zipPath) {
 }
 
 function sendProgress(task, step, index, total, status, result) {
-  sendToSender(task, 'inspection:progress', {
+  const payload = {
     taskId: task.id,
     deviceId: task.deviceId,
     stepId: step.id,
@@ -418,10 +588,21 @@ function sendProgress(task, step, index, total, status, result) {
     total,
     status,
     result: result ? { ok: result.ok, error: result.error || null } : null
-  });
+  };
+  if (task.tracked) {
+    task.status = 'running';
+    task.progress = payload;
+    lastTaskState = publicInspectionTask(task);
+  }
+  sendToSender(task, 'inspection:progress', payload);
 }
 
 function sendDone(task, payload) {
+  if (task.tracked) {
+    task.status = payload.cancelled ? 'cancelled' : payload.ok ? 'success' : 'failed';
+    task.result = payload;
+    lastTaskState = publicInspectionTask(task);
+  }
   sendToSender(task, 'inspection:done', { taskId: task.id, deviceId: task.deviceId, ...payload });
 }
 
@@ -431,6 +612,19 @@ function sendToSender(task, channel, payload) {
     return;
   }
   ctx.broadcastToAllWindows(channel, payload);
+}
+
+function publicInspectionTask(task) {
+  if (!task) return null;
+  return {
+    id: task.id,
+    taskId: task.id,
+    deviceId: task.deviceId,
+    status: task.status || (task.cancelled ? 'cancelled' : 'running'),
+    startedAt: task.startedAt || null,
+    progress: task.progress || null,
+    result: task.result || null
+  };
 }
 
 function toErrorRecord(step, result) {
@@ -478,6 +672,18 @@ function formatBytes(bytes) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function firstKb(text, regex) {
+  const value = Number(firstMatch(text, regex));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function formatKbValue(kb) {
+  const n = Number(kb) || 0;
+  if (n < 1024) return `${n} KB`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024).toFixed(1)} GB`;
+}
+
 function formatStamp(date) {
   const pad = (n) => String(n).padStart(2, '0');
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
@@ -499,6 +705,8 @@ async function writeJson(filePath, data) {
   await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), 'utf8');
 }
 
-module.exports = { register };
+function getAdbCommand() {
+  return fs.existsSync(BUNDLED_ADB_PATH) ? BUNDLED_ADB_PATH : 'adb';
+}
 
-// $XBH_AI_PATCH_END
+module.exports = { register, runInspection };

@@ -1,4 +1,3 @@
-// XBH_AI_PATCH_START
 // 自动更新集成 - 使用 electron-updater 实现差分增量更新
 // 开发模式下不启用自动更新（electron-updater 需要签名后的应用才能工作）
 //
@@ -87,7 +86,6 @@ function setupAutoUpdater() {
 // 在模块加载时立即绑定事件（保持与原 main.cjs 顶层绑定的行为一致）
 setupAutoUpdater();
 
-// XBH_AI_PATCH_START
 // 自动更新 IPC handlers
 // electron-updater 打包后会自动读取 resources/app-update.yml 中的 publish 配置
 // 无需手动检测 electron-builder.json（该文件打包后不存在于 asar 中）
@@ -157,7 +155,6 @@ function register(ipcMain) {
   ipcMain.handle('updater:status', async () => {
     return { ...updaterStatus, currentVersion: getAppVersion() };
   });
-  // XBH_AI_PATCH_END
 }
 
 module.exports = { register };

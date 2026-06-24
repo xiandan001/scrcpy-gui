@@ -32,7 +32,7 @@
 
 ### 3. AI 智能日志分析 + MCP 服务
 - **AI 智能分析**：基于 `agnes-2.0-flash` 模型，以流式输出方式实时返回分析结果，支持 Markdown 渲染（标题、代码块、表格、列表等）、多轮对话追问、结果导出为 `.md` 文件。
-- **MCP 服务**：开启后（默认 `http://127.0.0.1:3000/sse`），外部 AI 工具（Claude CLI、Cursor、Trae 等）可通过自然语言指令直接控制日志抓取与 AI 分析，提供 `device_list`、`capture_start`、`log_filter`、`ai_analyze` 等 11 个工具。
+- **MCP 服务**：开启后（默认 `http://127.0.0.1:49321/mcp`），外部 AI 工具（Claude CLI、Cursor、Trae 等）可通过自然语言指令直接控制日志抓取、应用包查询、性能采样、设备巡检与 AI 分析，提供 `device_list`、`package_list`、`perf_snapshot`、`inspection_run`、`ai_analyze` 等 16 个工具。
 
 ![AI 智能日志分析](docs/image.png)
 ![MCP 服务](docs/企业微信截图_17817763877431.png)

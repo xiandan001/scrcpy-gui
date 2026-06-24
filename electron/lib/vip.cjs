@@ -1,6 +1,5 @@
 // electron/lib/vip.cjs
 // VIP 授权运行时：Ed25519 验签 + 机器码绑定 + fail-closed
-// XBH_AI_PATCH: VIP 会员体系
 // 性能优化：全部异步化，机器码采集不阻塞 main 进程
 
 const crypto = require('crypto');
@@ -15,16 +14,14 @@ MCowBQYDK2VwAyEAaf5YkO6Yb4Oz7mcVQNAmx+pb5hiSEzCy9pRYzzR8pEs=
 -----END PUBLIC KEY-----`;
 
 const TOKEN_FILE = 'vip-token.txt';
-// $XBH_AI_PATCH_START
 // 激活记录、备注与复制历史持久化文件
 const ACTIVATION_RECORDS_FILE = 'vip-activation-records.json';
-// $XBH_AI_PATCH_END
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
 function getTokenPath() {
   return path.join(app.getPath('userData'), TOKEN_FILE);
 }
 
-// $XBH_AI_PATCH_START
 // 激活记录数据读写：只记录本机激活流程证据，不参与授权判定。
 function getActivationRecordsPath() {
   return path.join(app.getPath('userData'), ACTIVATION_RECORDS_FILE);
@@ -92,7 +89,6 @@ function addCopyHistory(kind, value) {
   });
   return writeActivationRecordData(data);
 }
-// $XBH_AI_PATCH_END
 
 // 返回 free 基线状态（携带本机机器码）
 function freeBaseStatus(mid, reason) {
@@ -112,17 +108,18 @@ function verifyToken(token) {
   const parts = String(token).trim().split('.');
   if (parts.length !== 2) return { valid: false, error: 'bad_format' };
 
+  const payloadBytes = decodeCanonicalBase64Url(parts[0]);
+  if (!payloadBytes) return { valid: false, error: 'bad_payload' };
+
   let payload;
   try {
-    payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    payload = JSON.parse(payloadBytes.toString('utf8'));
   } catch (e) {
     return { valid: false, error: 'bad_payload' };
   }
 
-  let sig;
-  try {
-    sig = Buffer.from(parts[1], 'base64url');
-  } catch (e) {
+  const sig = decodeCanonicalBase64Url(parts[1]);
+  if (!sig || sig.length !== 64) {
     return { valid: false, error: 'bad_signature' };
   }
 
@@ -135,6 +132,18 @@ function verifyToken(token) {
   }
   if (!valid) return { valid: false, error: 'bad_signature' };
   return { valid: true, payload };
+}
+
+function decodeCanonicalBase64Url(segment) {
+  const value = String(segment || '');
+  if (!value || !BASE64URL_RE.test(value)) return null;
+  let decoded;
+  try {
+    decoded = Buffer.from(value, 'base64url');
+  } catch {
+    return null;
+  }
+  return decoded.toString('base64url') === value ? decoded : null;
 }
 
 // 异步解析并验证 token：读文件 → 验签 → 比对机器码 → 过期判断
@@ -213,10 +222,8 @@ function register(ipcMain) {
     // 持久化
     try {
       fs.writeFileSync(getTokenPath(), String(token).trim(), 'utf8');
-      // $XBH_AI_PATCH_START
       // 激活成功后写入本机激活记录，便于后续备注、到期和重签追踪。
       appendActivationRecord(payload, mid.machineId, token);
-      // $XBH_AI_PATCH_END
     } catch (e) {
       return { success: false, error: 'write_failed', detail: e.message };
     }
@@ -231,7 +238,6 @@ function register(ipcMain) {
     return { success: true, status: await computeStatusAsync() };
   });
 
-  // $XBH_AI_PATCH_START
   // 激活记录增强：记录、备注、复制历史与重签流程说明。
   ipcMain.handle('vip:getActivationRecords', async () => {
     return { ok: true, ...readActivationRecordData() };
@@ -263,7 +269,6 @@ function register(ipcMain) {
     writeActivationRecordData(data);
     return { ok: true, ...readActivationRecordData() };
   });
-  // $XBH_AI_PATCH_END
 }
 
 // 供其他 main 进程模块同步调用的状态查询（使用缓存，不阻塞）
@@ -301,12 +306,10 @@ function preload() {
 module.exports = {
   register,
   getStatus,
-  // $XBH_AI_PATCH_START
   // 供新增巡检模块使用异步会员状态，避免机器码缓存未就绪时误判为基础版
   getStatusAsync: computeStatusAsync,
   readActivationRecordData,
   addCopyHistory,
-  // $XBH_AI_PATCH_END
   verifyToken,
   preload
 };

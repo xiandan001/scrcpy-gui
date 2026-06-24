@@ -1,4 +1,3 @@
-// $XBH_AI_PATCH_START
 // 设备巡检报告与证据包导出 UI：只负责交互和进度展示，采集逻辑在 main 进程
 
 import { useEffect, useState } from 'react';
@@ -10,6 +9,7 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
   const isVipLoading = !vipStatus || vipStatus.reason === 'loading';
   const isVip = vipStatus?.activated === true;
   const [includeBugreport, setIncludeBugreport] = useState(false);
+  const [includeAiSummary, setIncludeAiSummary] = useState(true);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [result, setResult] = useState(null);
@@ -37,6 +37,28 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
     };
   }, [open, device?.id, showToast]);
 
+  useEffect(() => {
+    if (!open || !device?.id || !window.electronAPI?.inspectionState) return undefined;
+    let alive = true;
+    window.electronAPI.inspectionState({ deviceId: device.id }).then((res) => {
+      if (!alive) return;
+      const task = res?.task;
+      if (!task) {
+        setRunning(false);
+        setProgress(null);
+        setResult(null);
+        setError('');
+        return;
+      }
+      const active = task.status === 'running' || task.status === 'cancelling';
+      setRunning(active);
+      setProgress(task.progress || null);
+      setResult(task.result || null);
+      setError(task.result && !task.result.ok ? task.result.error || '' : '');
+    });
+    return () => { alive = false; };
+  }, [open, device?.id]);
+
   if (!open) return null;
 
   const panelClass = isDark
@@ -47,8 +69,9 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
 
   const startInspection = async () => {
     if (!isVip || isVipLoading) return;
+    const initialProgress = { index: 0, total: includeBugreport ? 19 : 18, stepLabel: '准备巡检', status: 'running' };
     setRunning(true);
-    setProgress({ index: 0, total: includeBugreport ? 19 : 18, stepLabel: '准备巡检', status: 'running' });
+    setProgress(initialProgress);
     setResult(null);
     setError('');
     try {
@@ -56,12 +79,16 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
         deviceId: device.id,
         deviceLabel: device.model || device.id,
         includeBugreport,
+        includeAiSummary,
         outputBaseDir: inspectionPath || undefined
       });
       if (!res?.ok) {
         setRunning(false);
         setError(res?.error || '巡检启动失败');
         setResult(res || null);
+      } else if (res?.task) {
+        setRunning(res.task.status === 'running' || res.task.status === 'cancelling');
+        setProgress(res.task.progress || initialProgress);
       }
     } catch (e) {
       setRunning(false);
@@ -79,11 +106,11 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
     setResult(null);
     setError('');
     setIncludeBugreport(false);
+    setIncludeAiSummary(true);
   };
 
   const closePanel = () => {
-    if (running) return;
-    resetPanel();
+    if (!running) resetPanel();
     onClose?.();
   };
 
@@ -106,8 +133,8 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 backdrop-blur-sm p-4" onClick={closePanel}>
-      <div className={`w-full max-w-2xl rounded-xl border shadow-2xl overflow-hidden ${panelClass}`} onClick={(e) => e.stopPropagation()}>
-        <div className={`px-5 py-4 border-b flex items-center justify-between ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+      <div className={`w-full max-w-2xl max-h-[86vh] rounded-xl border shadow-2xl overflow-hidden flex flex-col ${panelClass}`} onClick={(e) => e.stopPropagation()}>
+        <div className={`shrink-0 px-5 py-4 border-b flex items-center justify-between ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center">
               <ClipboardCheck size={22} className="text-emerald-400" />
@@ -119,8 +146,7 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
           </div>
           <button
             onClick={closePanel}
-            disabled={running}
-            className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${isDark ? 'text-[#9AA0A6] hover:bg-[#3E4145]' : 'text-slate-400 hover:bg-slate-100'}`}
+            className={`p-1.5 rounded-lg transition-colors ${isDark ? 'text-[#9AA0A6] hover:bg-[#3E4145]' : 'text-slate-400 hover:bg-slate-100'}`}
             title="关闭"
           >
             <X size={20} />
@@ -128,7 +154,7 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
         </div>
 
         {isVipLoading ? (
-          <div className="p-6">
+          <div className="min-h-0 flex-1 overflow-y-auto p-6">
             <div className={`p-5 rounded-xl border flex items-center gap-4 ${soft}`}>
               <div className="w-11 h-11 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
                 <Loader2 size={22} className="text-emerald-400 animate-spin" />
@@ -140,7 +166,7 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
             </div>
           </div>
         ) : !isVip ? (
-          <div className="p-6">
+          <div className="min-h-0 flex-1 overflow-y-auto p-6">
             <div className={`p-5 rounded-xl border flex gap-4 ${soft}`}>
               <div className="w-11 h-11 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
                 <Lock size={22} className="text-amber-400" />
@@ -164,7 +190,7 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
             </div>
           </div>
         ) : (
-          <div className="p-5 space-y-5">
+          <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-5">
             <div className={`p-4 rounded-xl border ${soft}`}>
               <div className="flex items-center justify-between gap-4">
                 <div>
@@ -208,6 +234,19 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
                   className="w-5 h-5 accent-emerald-500"
                 />
               </label>
+              <label className="mt-4 flex items-center justify-between gap-4 cursor-pointer">
+                <div>
+                  <div className="font-medium">包含 AI 分析</div>
+                  <p className={`text-xs mt-1 ${muted}`}>基于巡检摘要生成总体结论、优先关注项和下一步建议。</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={includeAiSummary}
+                  onChange={(e) => setIncludeAiSummary(e.target.checked)}
+                  disabled={running}
+                  className="w-5 h-5 accent-emerald-500"
+                />
+              </label>
             </div>
 
             {running && (
@@ -238,8 +277,25 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
                   {result.cancelled ? <AlertCircle size={18} className="text-amber-400" /> : <CheckCircle2 size={18} className="text-emerald-400" />}
                   <span className="font-medium">{result.cancelled ? '已生成部分巡检结果' : '巡检完成'}</span>
                 </div>
+                {result.analysis && (
+                  <div className={`mb-3 p-3 rounded-lg border text-xs ${isDark ? 'bg-[#202124] border-[#3E4145]' : 'bg-white border-slate-200'}`}>
+                    <div className="font-medium mb-1">健康结论：{result.analysis.summary}</div>
+                    <div className={muted}>风险等级：{result.analysis.severity}</div>
+                    {(result.analysis.findings || []).slice(0, 3).map((item, index) => (
+                      <div key={`${item.label}-${index}`} className="mt-1 text-amber-400">{item.label}：{item.detail}</div>
+                    ))}
+                  </div>
+                )}
                 <div className={`text-xs space-y-1 ${muted}`}>
                   <div>报告：<span className="font-mono select-all">{result.reportPath}</span></div>
+                  {result.aiSummary && !result.aiSummary.skipped && (
+                    <div>
+                      AI 分析：
+                      <span>
+                        {result.aiSummary.ok ? '已写入巡检报告' : result.aiSummary.error || '未生成'}
+                      </span>
+                    </div>
+                  )}
                   <div>证据包：<span className="font-mono select-all">{result.zipPath || result.zipError || '未生成'}</span></div>
                   <div>成功 {result.successCount || 0} 项，失败 {result.failedCount || 0} 项</div>
                 </div>
@@ -270,5 +326,3 @@ export default function InspectionPanel({ open, device, theme, vipStatus, inspec
     </div>
   );
 }
-
-// $XBH_AI_PATCH_END

@@ -1,5 +1,5 @@
 // 设置存储 IPC handlers
-// 持久化用户设置：自定义主题、截图保存路径、录屏保存路径、巡检保存路径、推送远程路径历史
+// 持久化用户设置：自定义主题、截图保存路径、录屏保存路径、巡检保存路径、性能导出路径、推送远程路径历史
 
 const { app } = require('electron');
 const fs = require('fs');
@@ -34,7 +34,6 @@ function register(ipcMain) {
     }
   });
 
-  // XBH_AI_PATCH_START
   // 截图保存路径设置持久化
   ipcMain.handle('settings:saveScreenshotPath', async (event, screenshotPath) => {
     try {
@@ -70,7 +69,6 @@ function register(ipcMain) {
     }
   });
 
-  // XBH_AI_PATCH_START
   // 录屏保存路径设置持久化（与截图路径区分）
   ipcMain.handle('settings:saveScreenRecordPath', async (event, screenRecordPath) => {
     try {
@@ -106,7 +104,6 @@ function register(ipcMain) {
     }
   });
 
-  // XBH_AI_PATCH_START
   // 巡检保存路径设置持久化（沿用截图/录屏路径设置方式）
   ipcMain.handle('settings:saveInspectionPath', async (event, inspectionPath) => {
     try {
@@ -141,10 +138,42 @@ function register(ipcMain) {
       return { success: false, error: error.message, data: null };
     }
   });
-  // XBH_AI_PATCH_END
-  // XBH_AI_PATCH_END
 
-  // XBH_AI_PATCH_START
+  // 性能导出/报告保存路径设置持久化
+  ipcMain.handle('settings:savePerformancePath', async (event, performancePath) => {
+    try {
+      const userDataPath = app.getPath('userData');
+      const settingsFilePath = path.join(userDataPath, 'settings.json');
+      let settings = {};
+      if (fs.existsSync(settingsFilePath)) {
+        const data = fs.readFileSync(settingsFilePath, 'utf-8');
+        settings = JSON.parse(data);
+      }
+      settings.performancePath = performancePath;
+      fs.writeFileSync(settingsFilePath, JSON.stringify(settings, null, 2), 'utf-8');
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to save performance path:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('settings:loadPerformancePath', async () => {
+    try {
+      const userDataPath = app.getPath('userData');
+      const settingsFilePath = path.join(userDataPath, 'settings.json');
+      if (fs.existsSync(settingsFilePath)) {
+        const data = fs.readFileSync(settingsFilePath, 'utf-8');
+        const settings = JSON.parse(data);
+        return { success: true, data: settings.performancePath || null };
+      }
+      return { success: true, data: null };
+    } catch (error) {
+      console.error('Failed to load performance path:', error);
+      return { success: false, error: error.message, data: null };
+    }
+  });
+
   // 推送远程路径历史记录持久化
   ipcMain.handle('settings:savePushRemotePathHistory', async (event, historyList) => {
     try {
@@ -179,7 +208,6 @@ function register(ipcMain) {
       return { success: false, error: error.message, data: [] };
     }
   });
-  // XBH_AI_PATCH_END
 }
 
 module.exports = { register };

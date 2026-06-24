@@ -1,6 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// XBH_AI_PATCH_START
 // 安全 listener 包装：隔离 callback 异常，避免影响后续 IPC 事件处理
 const safeListener = (callback) => (event, ...args) => {
   try {
@@ -9,7 +8,6 @@ const safeListener = (callback) => (event, ...args) => {
     console.error('[Preload] IPC listener error:', e);
   }
 };
-// XBH_AI_PATCH_END
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getDevices: () => ipcRenderer.invoke('adb:getDevices'),
@@ -32,7 +30,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showOpenDialog: (options) => ipcRenderer.invoke('dialog:openFile', options),
   showSaveDialog: (options) => ipcRenderer.invoke('dialog:saveFile', options),
   getDroppedFilePath: (fileName) => ipcRenderer.invoke('dialog:getDroppedFilePath', fileName),
-  // XBH_AI_PATCH_START
   onDroppedFile: (callback) => {
     const listener = safeListener(callback);
     ipcRenderer.on('drop:file', listener);
@@ -43,40 +40,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('update-status', listener);
     return () => ipcRenderer.off('update-status', listener);
   },
-  // XBH_AI_PATCH_END
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: () => ipcRenderer.invoke('window:maximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
   saveCustomThemes: (customThemes) => ipcRenderer.invoke('themes:saveCustomThemes', customThemes),
   loadCustomThemes: () => ipcRenderer.invoke('themes:loadCustomThemes'),
-  // XBH_AI_PATCH_START
   // 截图保存路径设置
   saveScreenshotPath: (path) => ipcRenderer.invoke('settings:saveScreenshotPath', path),
   loadScreenshotPath: () => ipcRenderer.invoke('settings:loadScreenshotPath'),
   saveScreenRecordPath: (path) => ipcRenderer.invoke('settings:saveScreenRecordPath', path),
   loadScreenRecordPath: () => ipcRenderer.invoke('settings:loadScreenRecordPath'),
-  // XBH_AI_PATCH_START
   // 巡检保存路径设置
   saveInspectionPath: (path) => ipcRenderer.invoke('settings:saveInspectionPath', path),
   loadInspectionPath: () => ipcRenderer.invoke('settings:loadInspectionPath'),
-  // XBH_AI_PATCH_END
+  savePerformancePath: (path) => ipcRenderer.invoke('settings:savePerformancePath', path),
+  loadPerformancePath: () => ipcRenderer.invoke('settings:loadPerformancePath'),
   selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
   getUserDataPath: () => ipcRenderer.invoke('app:getUserDataPath'),
-  // XBH_AI_PATCH_START
   // 版本号统一管理：渲染进程获取应用版本
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   // 渲染进程主动查询是否需要显示更新说明（拉取模式）
   checkChangelog: () => ipcRenderer.invoke('app:checkChangelog'),
-  // XBH_AI_PATCH_END
-  // XBH_AI_PATCH_START
   // 更新说明弹窗：main 进程检测版本升级后主动推送
   onChangelogShow: (callback) => {
     const listener = safeListener(callback);
     ipcRenderer.on('changelog:show', listener);
     return () => ipcRenderer.off('changelog:show', listener);
   },
-  // XBH_AI_PATCH_END
-  // XBH_AI_PATCH_START
   // 自动更新 API
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
@@ -87,7 +77,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('updater:event', handler);
     return () => ipcRenderer.removeListener('updater:event', handler);
   },
-  // XBH_AI_PATCH_END
   openFolder: (path) => ipcRenderer.invoke('shell:openPath', path),
   ensureFolder: (path) => ipcRenderer.invoke('shell:ensureFolder', path),
   // 连接历史记录
@@ -98,7 +87,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveTerminalCommand: (command) => ipcRenderer.invoke('terminalHistory:save', command),
   loadTerminalHistory: () => ipcRenderer.invoke('terminalHistory:load'),
   clearTerminalHistory: () => ipcRenderer.invoke('terminalHistory:clear'),
-  // XBH_AI_PATCH_START
   // Android Log Analyzer 集成
   adbListDevices: () => ipcRenderer.invoke('adb:listDevices'),
   adbStartLog: (args) => ipcRenderer.invoke('adb:startLog', args),
@@ -127,7 +115,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 推送远程路径历史记录
   savePushRemotePathHistory: (historyList) => ipcRenderer.invoke('settings:savePushRemotePathHistory', historyList),
   loadPushRemotePathHistory: () => ipcRenderer.invoke('settings:loadPushRemotePathHistory'),
-  // XBH_AI_PATCH_START
   // AI 日志分析
   aiAnalyzeLog: (args) => ipcRenderer.invoke('ai:analyzeLog', args),
   aiStopAnalyze: () => ipcRenderer.invoke('ai:stopAnalyze'),
@@ -153,17 +140,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('ai:streamError', listener);
     return () => ipcRenderer.off('ai:streamError', listener);
   },
-  // XBH_AI_PATCH_START
   // AI 自动诊断：实时检测崩溃/ANR/OOM 并提示用户
   autoDiagnoseAnalyze: (args) => ipcRenderer.invoke('auto-diagnose:analyze', args),
   autoDiagnoseToggle: (enabled) => ipcRenderer.invoke('auto-diagnose:toggle', { enabled }),
   autoDiagnoseStatus: () => ipcRenderer.invoke('auto-diagnose:status'),
   autoDiagnoseClear: () => ipcRenderer.invoke('auto-diagnose:clear'),
-  // XBH_AI_PATCH_START
   // 日志显示区域变更时重新扫描（搜索完成 / 返回原日志）
   autoDiagnoseRescan: (args) => ipcRenderer.invoke('auto-diagnose:rescan', args),
-  // XBH_AI_PATCH_END
-  // $XBH_AI_PATCH_START
   // 日志诊断规则库
   autoDiagnoseRulesList: () => ipcRenderer.invoke('auto-diagnose:rules:list'),
   autoDiagnoseRulesSave: (args) => ipcRenderer.invoke('auto-diagnose:rules:save', args),
@@ -172,21 +155,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   autoDiagnoseRulesTest: (args) => ipcRenderer.invoke('auto-diagnose:rules:test', args),
   autoDiagnoseRulesExport: () => ipcRenderer.invoke('auto-diagnose:rules:export'),
   autoDiagnoseRulesImport: (args) => ipcRenderer.invoke('auto-diagnose:rules:import', args),
-  // $XBH_AI_PATCH_END
   onAutoDiagnose: (callback) => {
     const listener = safeListener(callback);
     ipcRenderer.on('auto-diagnose:detected', listener);
     return () => ipcRenderer.off('auto-diagnose:detected', listener);
   },
-  // XBH_AI_PATCH_START
   // 扫描完成事件：渲染进程据此从"监控中"切换到"扫描完成（无异常）"状态
   onAutoDiagnoseScanComplete: (callback) => {
     const listener = safeListener(callback);
     ipcRenderer.on('auto-diagnose:scan-complete', listener);
     return () => ipcRenderer.off('auto-diagnose:scan-complete', listener);
   },
-  // XBH_AI_PATCH_END
-  // XBH_AI_PATCH_START
   // 智能日志搜索
   smartSearch: (args) => ipcRenderer.invoke('smart-search:search', args),
   smartSearchStop: () => ipcRenderer.invoke('smart-search:stop'),
@@ -210,38 +189,37 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('smart-search:complete', listener);
     return () => ipcRenderer.off('smart-search:complete', listener);
   },
-  // XBH_AI_PATCH_END
-  // XBH_AI_PATCH_START
   // VIP 会员体系
   vipGetStatus: () => ipcRenderer.invoke('vip:getStatus'),
   vipGetMachineId: () => ipcRenderer.invoke('vip:getMachineId'),
   vipActivate: (token) => ipcRenderer.invoke('vip:activate', token),
   vipDeactivate: () => ipcRenderer.invoke('vip:deactivate'),
-  // $XBH_AI_PATCH_START
   // 会员激活记录、备注与复制历史
   vipGetActivationRecords: () => ipcRenderer.invoke('vip:getActivationRecords'),
   vipUpdateActivationRecordNote: (args) => ipcRenderer.invoke('vip:updateActivationRecordNote', args),
   vipAddCopyHistory: (args) => ipcRenderer.invoke('vip:addCopyHistory', args),
   vipClearCopyHistory: () => ipcRenderer.invoke('vip:clearCopyHistory'),
-  // $XBH_AI_PATCH_END
-  // $XBH_AI_PATCH_START
   // App 包管理增强
   packageList: (args) => ipcRenderer.invoke('package:list', args),
   packageDetail: (args) => ipcRenderer.invoke('package:detail', args),
   packagePermissions: (args) => ipcRenderer.invoke('package:permissions', args),
   packageExportApk: (args) => ipcRenderer.invoke('package:exportApk', args),
+  packageSnapshot: (args) => ipcRenderer.invoke('package:snapshot', args),
+  packageLaunch: (args) => ipcRenderer.invoke('package:launch', args),
+  packageBatch: (args) => ipcRenderer.invoke('package:batch', args),
   packageUninstall: (args) => ipcRenderer.invoke('package:uninstall', args),
   packageClearData: (args) => ipcRenderer.invoke('package:clearData', args),
   packageForceStop: (args) => ipcRenderer.invoke('package:forceStop', args),
   packageSetEnabled: (args) => ipcRenderer.invoke('package:setEnabled', args),
-  // $XBH_AI_PATCH_END
-  // $XBH_AI_PATCH_START
   // 性能监控面板
   perfStart: (args) => ipcRenderer.invoke('perf:start', args),
   perfStop: (args) => ipcRenderer.invoke('perf:stop', args),
   perfSnapshot: (args) => ipcRenderer.invoke('perf:snapshot', args),
   perfHistory: (args) => ipcRenderer.invoke('perf:history', args),
+  perfState: (args) => ipcRenderer.invoke('perf:state', args),
   perfExport: (args) => ipcRenderer.invoke('perf:export', args),
+  perfReport: (args) => ipcRenderer.invoke('perf:report', args),
+  perfReportState: (args) => ipcRenderer.invoke('perf:reportState', args),
   perfGetThresholds: () => ipcRenderer.invoke('perf:getThresholds'),
   perfSetThresholds: (args) => ipcRenderer.invoke('perf:setThresholds', args),
   onPerformanceUpdate: (callback) => {
@@ -249,12 +227,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('performance:update', listener);
     return () => ipcRenderer.off('performance:update', listener);
   },
-  // $XBH_AI_PATCH_END
-  // XBH_AI_PATCH_END
-  // $XBH_AI_PATCH_START
+  onPerfReportProgress: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('perf:reportProgress', listener);
+    return () => ipcRenderer.off('perf:reportProgress', listener);
+  },
+  onPerfReportDone: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('perf:reportDone', listener);
+    return () => ipcRenderer.off('perf:reportDone', listener);
+  },
   // 设备巡检报告与证据包导出
   inspectionStart: (args) => ipcRenderer.invoke('inspection:start', args),
   inspectionCancel: () => ipcRenderer.invoke('inspection:cancel'),
+  inspectionState: (args) => ipcRenderer.invoke('inspection:state', args),
   inspectionOpenFolder: (folderPath) => ipcRenderer.invoke('inspection:openFolder', folderPath),
   onInspectionProgress: (callback) => {
     const listener = safeListener(callback);
@@ -265,6 +251,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = safeListener(callback);
     ipcRenderer.on('inspection:done', listener);
     return () => ipcRenderer.off('inspection:done', listener);
+  },
+  // 任务中心：复现脚本、多设备批量任务和运行历史
+  taskScriptsList: () => ipcRenderer.invoke('task-center:scripts:list'),
+  taskScriptSave: (args) => ipcRenderer.invoke('task-center:scripts:save', args),
+  taskScriptDelete: (args) => ipcRenderer.invoke('task-center:scripts:delete', args),
+  taskRun: (args) => ipcRenderer.invoke('task-center:run', args),
+  taskCancel: (args) => ipcRenderer.invoke('task-center:cancel', args),
+  taskHistory: () => ipcRenderer.invoke('task-center:history'),
+  taskHistoryClear: () => ipcRenderer.invoke('task-center:history:clear'),
+  taskState: () => ipcRenderer.invoke('task-center:state'),
+  onTaskCenterUpdate: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('task-center:update', listener);
+    return () => ipcRenderer.off('task-center:update', listener);
   }
-  // $XBH_AI_PATCH_END
 });

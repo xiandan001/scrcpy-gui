@@ -1,18 +1,12 @@
 // src/components/MemberCenter.jsx
 // 会员中心：状态卡 + 开通支付向导 + 激活区 + 功能对比表
-// XBH_AI_PATCH: VIP 会员体系
 
 import { useState, useEffect } from 'react';
-// $XBH_AI_PATCH_START
 // 同步会员中心功能对比表所需图标。
 import { Crown, Copy, Check, Lock, Sparkles, ShieldCheck, Brain, Server, Loader2, Smartphone, History, X, ChevronRight, Wallet, QrCode, Package, Activity, ClipboardCheck, ListChecks } from 'lucide-react';
-// $XBH_AI_PATCH_END
-// $XBH_AI_PATCH_START
 // 会员激活记录增强面板
 import ActivationRecordsPanel from './ActivationRecordsPanel';
-// $XBH_AI_PATCH_END
 
-// $XBH_AI_PATCH_START
 // 同步当前版本已提供的会员权益与功能对比。
 const FEATURES = [
   { icon: Smartphone, name: '同时管理设备数量', free: '1 台', vip: '不限' },
@@ -27,9 +21,7 @@ const FEATURES = [
   { icon: Server, name: 'MCP 服务集成', free: '不可用', vip: '可用' },
   { icon: History, name: '激活记录与复制历史', free: '可用', vip: '可用' }
 ];
-// $XBH_AI_PATCH_END
 
-// XBH_AI_PATCH_START
 // 支付预留：套餐与支付方式数据结构（常量化，便于未来接入在线支付）
 // 未来接入在线支付时，只需修改 PAYMENT_METHODS 中的 handler，UI 无需改动
 const PLANS = [
@@ -77,7 +69,6 @@ const CONTACT_INFO = {
   wechat: '请扫描左侧微信收款码加好友',
   note: '付款后请将「本机机器码」发送给开发者，获取专属激活码'
 };
-// XBH_AI_PATCH_END
 
 const ERROR_TEXT = {
   bad_signature: '激活码无效（签名校验失败），请检查是否复制完整',
@@ -99,13 +90,10 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
   const [activating, setActivating] = useState(false);
   const [activateError, setActivateError] = useState('');
   const [copied, setCopied] = useState(false);
-  // $XBH_AI_PATCH_START
   // 顶部机器码复制后刷新激活记录面板，确保复制历史即时显示。
   const [activationRecordsRefreshKey, setActivationRecordsRefreshKey] = useState(0);
   const [activationRecordData, setActivationRecordData] = useState(null);
-  // $XBH_AI_PATCH_END
 
-  // XBH_AI_PATCH_START
   // 支付向导状态
   const [payWizardOpen, setPayWizardOpen] = useState(false);
   const [payStep, setPayStep] = useState(0); // 0=选套餐, 1=选支付方式, 2=扫码支付, 3=完成
@@ -118,18 +106,15 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
   useEffect(() => {
     if (vipStatus.activated) setMachineIdUnlocked(true);
   }, [vipStatus.activated]);
-  // XBH_AI_PATCH_END
 
   const copyMachineId = async () => {
     if (!vipStatus.machineId) return;
     try {
       await navigator.clipboard.writeText(vipStatus.machineId);
-      // $XBH_AI_PATCH_START
       // 写入复制历史，便于激活码重签与售后追踪。
       const historyRes = await window.electronAPI?.vipAddCopyHistory?.({ kind: 'machineId', value: vipStatus.machineId });
       if (historyRes?.ok) setActivationRecordData(historyRes);
       setActivationRecordsRefreshKey(prev => prev + 1);
-      // $XBH_AI_PATCH_END
       setCopied(true);
       showToast?.('机器码已复制');
       setTimeout(() => setCopied(false), 2000);
@@ -151,11 +136,9 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
       if (res.success) {
         setTokenInput('');
         showToast?.('会员激活成功，感谢支持！');
-        // $XBH_AI_PATCH_START
         // 激活成功后同步刷新激活记录面板。
         setActivationRecordData(res);
         setActivationRecordsRefreshKey(prev => prev + 1);
-        // $XBH_AI_PATCH_END
         await onActivated?.();
       } else {
         setActivateError(ERROR_TEXT[res.error] || ('激活失败：' + res.error));
@@ -167,7 +150,6 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
     }
   };
 
-  // XBH_AI_PATCH_START
   // 支付向导：打开/关闭
   const openPayWizard = () => {
     setPayStep(0);
@@ -187,7 +169,6 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
     closePayWizard();
     showToast?.('机器码已解锁，请复制发送给开发者获取激活码');
   };
-  // XBH_AI_PATCH_END
 
   // loading 骨架屏：状态加载中不显示具体套餐，避免先闪基础版再切会员版
   if (isLoading) {
@@ -242,7 +223,6 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
             </div>
           </div>
 
-          {/* XBH_AI_PATCH: 非会员显示"立即开通"按钮 */}
           {!isVip && (
             <button
               onClick={openPayWizard}
@@ -257,7 +237,6 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
         {/* 机器码 */}
         <div className={`mt-5 pt-5 border-t ${isVip ? 'border-amber-200' : isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
           <div className={`text-xs mb-1.5 ${isDark ? 'text-[#80868B]' : 'text-slate-500'}`}>本机机器码</div>
-          {/* XBH_AI_PATCH: 非会员默认隐藏机器码，支付完成后解锁 */}
           {machineIdUnlocked ? (
             <div className="flex items-center gap-2">
               <code className={`flex-1 px-3 py-2 rounded-lg font-mono text-xs break-all ${isDark ? 'bg-[#3E4145]/60 text-[#E8EAED]' : 'bg-slate-50 text-slate-700'}`}>
@@ -313,7 +292,6 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
         </div>
       )}
 
-      {/* $XBH_AI_PATCH_START */}
       {/* 激活记录、备注、复制历史与重签说明 */}
       <ActivationRecordsPanel
         theme={t}
@@ -321,7 +299,6 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
         refreshKey={`${vipStatus.activated}-${vipStatus.issuedAt || ''}-${vipStatus.expiresAt || ''}-${activationRecordsRefreshKey}`}
         recordData={activationRecordData}
       />
-      {/* $XBH_AI_PATCH_END */}
 
       {/* 功能对比表 */}
       <div className={`p-6 rounded-xl border shadow-sm ${isDark ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
@@ -375,7 +352,6 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
         </div>
       </div>
 
-      {/* XBH_AI_PATCH_START */}
       {/* 支付向导模态框 */}
       {payWizardOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={closePayWizard}>
@@ -536,7 +512,6 @@ export default function MemberCenter({ theme, vipStatus, onActivated, showToast 
           </div>
         </div>
       )}
-      {/* XBH_AI_PATCH_END */}
     </div>
   );
 }

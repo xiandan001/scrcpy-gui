@@ -1,4 +1,3 @@
-// $XBH_AI_PATCH_START
 // 日志诊断规则库面板：管理内置规则与会员自定义规则。
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -340,5 +339,3 @@ function RuleEditor({ rule, isDark, muted, saving, onCancel, onSave }) {
 }
 
 export default DiagnosticRuleLibrary;
-
-// $XBH_AI_PATCH_END

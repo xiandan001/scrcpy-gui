@@ -1,4 +1,3 @@
-// XBH_AI_PATCH_START
 // AI Key 加载与轮询管理（被 ai-analyze / auto-diagnose / smart-search / mcp 共享）
 // 多 API Key 轮询：从本地私有文件 electron/api-keys.cjs 读取，避免 Key 进入 Git 仓库
 // 该文件已加入 .gitignore，但会被 electron-builder 打包进应用，因此发布版本仍可正常使用
@@ -47,10 +46,8 @@ const AGNES_MODEL = 'agnes-2.0-flash';
 const AI_MAX_LOG_LINES = 8000;
 // 对话上下文最大消息数（超出时保留最早的 system + 最近的消息）
 const AI_MAX_CONTEXT_MESSAGES = 20;
-// XBH_AI_PATCH_START
 // AI 对话上下文字节总量上限 2MB（防止超长消息累积导致内存/Token 失控）
 const AI_MAX_CONTEXT_BYTES = 2 * 1024 * 1024;
-// XBH_AI_PATCH_END
 
 module.exports = {
   AGNES_API_URL,

@@ -1,4 +1,3 @@
-// XBH_AI_PATCH
 // 瘦入口：app 生命周期 + createWindow + 注册所有领域模块
 // 各领域逻辑已拆分到 electron/lib/ 下的模块中
 
@@ -20,15 +19,13 @@ const autoDiagnose = require('./lib/auto-diagnose.cjs');
 const aiAnalyze = require('./lib/ai-analyze.cjs');
 const smartSearch = require('./lib/smart-search.cjs');
 const vip = require('./lib/vip.cjs');
-// $XBH_AI_PATCH_START
 // 设备巡检报告与证据包导出 IPC 模块
 const inspection = require('./lib/inspection.cjs');
 // 管理增强：App 包管理与性能监控 IPC 模块
 const packageManager = require('./lib/package-manager.cjs');
 const performanceMonitor = require('./lib/performance-monitor.cjs');
-// $XBH_AI_PATCH_END
+const taskCenter = require('./lib/task-center.cjs');
 
-// XBH_AI_PATCH_START
 // 单实例锁定 - 确保只有一个应用实例在运行
 const gotTheLock = app.requestSingleInstanceLock();
 
@@ -48,7 +45,6 @@ if (!gotTheLock) {
     }
   });
 }
-// XBH_AI_PATCH_END
 
 // 主窗口创建（Log Analyzer 窗口的创建由 log-analyzer 模块负责）
 function createWindow() {
@@ -81,13 +77,11 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  // XBH_AI_PATCH_START
   // 检测版本升级：必须在 createWindow() 之前执行。
   // 因为 createWindow() 会立即加载页面，渲染进程会马上调用 app:checkChangelog
   // 查询 pendingChangelog；如果此时还没设置标志位，弹窗就会丢失。
   version.cleanupPendingUpdater();
   version.checkVersionAndNotifyChangelog();
-  // XBH_AI_PATCH_END
 
   // 注册所有领域模块的 IPC handlers
   // 顺序无依赖（每个模块独立注册自己的 ipcMain.handle/on）
@@ -103,14 +97,12 @@ app.whenReady().then(() => {
   aiAnalyze.register(ipcMain);
   smartSearch.register(ipcMain);
   vip.register(ipcMain);
-  // $XBH_AI_PATCH_START
   // 注册设备巡检报告、App 包管理与性能监控模块
   inspection.register(ipcMain);
   packageManager.register(ipcMain);
   performanceMonitor.register(ipcMain);
-  // $XBH_AI_PATCH_END
+  taskCenter.register(ipcMain);
 
-  // XBH_AI_PATCH: 启动时异步预采集机器码（不阻塞窗口创建和 IPC）
   vip.preload();
 
   createWindow();
@@ -123,21 +115,19 @@ app.whenReady().then(() => {
   });
 });
 
-// XBH_AI_PATCH_START
 app.on('before-quit', async (event) => {
   // 清理 AI 相关资源
   aiAnalyze.resetAiState();
-  // XBH_AI_PATCH: 关闭 MCP HTTP server，避免端口占用/进程残留导致 OTA 安装器提示应用未关闭
   mcp.closeMcpServer();
   // 关闭 Log Analyzer 窗口（如有）
   const logWin = ctx.getLogAnalyzerWindow();
   if (logWin && !logWin.isDestroyed()) {
     logWin.destroy();
   }
-  // $XBH_AI_PATCH_START
   // 停止性能监控定时器，避免退出时仍有 ADB 采样任务。
   performanceMonitor.cleanup();
-  // $XBH_AI_PATCH_END
+  // 取消任务中心仍在执行的复现脚本，避免退出后残留 ADB 子进程。
+  taskCenter.cleanup();
   // 停止所有录屏进程（如果有）
   if (adb.hasActiveScreenRecords()) {
     event.preventDefault();
@@ -145,7 +135,6 @@ app.on('before-quit', async (event) => {
     app.quit();
   }
 });
-// XBH_AI_PATCH_END
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

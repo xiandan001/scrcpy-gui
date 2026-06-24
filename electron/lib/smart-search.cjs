@@ -1,4 +1,3 @@
-// XBH_AI_PATCH_START
 // 智能日志搜索：AI 分块搜索引擎
 // 用户输入自然语言查询 → 日志分块 → AI 逐块搜索 → 合并匹配结果
 //
@@ -24,10 +23,8 @@ const SMART_SEARCH_MAX_CONCURRENT = 3; // 最多并行 3 个分块
 
 // 智能搜索状态
 let smartSearchAbortController = null;
-// XBH_AI_PATCH_START
 // 会话 ID：用于区分不同搜索会话，防止旧搜索的事件污染新搜索状态
 let smartSearchSessionId = 0;
-// XBH_AI_PATCH_END
 
 function register(ipcMain) {
   ipcMain.handle('smart-search:search', async (event, args) => {
@@ -48,15 +45,13 @@ function register(ipcMain) {
       smartSearchAbortController.abort();
     }
 
-    // XBH_AI_PATCH_START
     // 会话 ID：本次搜索的唯一标识，所有事件携带此 ID，渲染进程据此过滤旧会话事件
     // 防止"停止→重新搜索"时旧搜索的 complete/chunk/progress 事件污染新搜索状态
     const mySessionId = ++smartSearchSessionId;
-    // XBH_AI_PATCH_END
 
     const sender = event.sender;
 
-    // 分块 - XBH_AI_PATCH: 首块更小（200条），快速返回首批结果让用户3秒内看到变化
+    // 分块 - 首块更小（200条），快速返回首批结果让用户3秒内看到变化
     const chunks = [];
     const FIRST_CHUNK_SIZE = 200; // 首块小，快速响应
     let firstChunkEnd = Math.min(entries.length, FIRST_CHUNK_SIZE);
@@ -83,7 +78,6 @@ function register(ipcMain) {
       sender.send('smart-search:start', { sessionId: mySessionId, totalChunks, totalEntries: entries.length });
     }
 
-    // XBH_AI_PATCH_START: 先调用 AI 快速提取关键词，提高本地匹配准确性
     async function extractKeywordsWithAI(query) {
       const prompt = `从以下用户查询中提取用于日志搜索的关键词。
 
@@ -169,9 +163,8 @@ function register(ipcMain) {
       queryKeywords = extractKeywords(query);
       console.log(`[SmartSearch] AI 提取异常，使用本地提取:`, queryKeywords);
     }
-    // XBH_AI_PATCH_END
 
-    // 构造系统 prompt - XBH_AI_PATCH: 优化 prompt 提高准确性
+    // 构造系统 prompt - 优化 prompt 提高准确性
     const systemPrompt = `你是 Android 日志分析专家。用户会用自然语言描述想查找的日志内容，你需要在提供的日志块中找到所有匹配的行。
 
 任务：
@@ -187,7 +180,6 @@ function register(ipcMain) {
 - 如果没有匹配，返回 {"matchedLines":[],"explanation":"未找到匹配"}
 - 行号必须是整数，不要带引号`;
 
-    // XBH_AI_PATCH_START
     // 本地精确匹配：从查询中提取关键词，本地保证 100% 准确匹配
     // 即使 AI 漏掉，本地匹配也能兜底
     function extractKeywords(q) {
@@ -252,14 +244,12 @@ function register(ipcMain) {
     }
 
     console.log(`[SmartSearch] 查询: "${query}", 最终关键词:`, queryKeywords, `(AND 逻辑)`);
-    // XBH_AI_PATCH_END
 
     // 并行处理分块（最多 MAX_CONCURRENT 个同时）
     const results = [];
     let completedChunks = 0;
 
     async function searchChunk(chunk) {
-      // XBH_AI_PATCH: 使用闭包内的 myController 而非全局变量
       if (myController.signal.aborted) return null;
 
       // 构造日志文本
@@ -289,7 +279,6 @@ function register(ipcMain) {
         const RETRY_DELAY_MS = 1000; // 重试间隔 1 秒
 
         function doRequest(currentKey) {
-          // XBH_AI_PATCH: 使用闭包内的 myController 而非全局变量
           if (myController.signal.aborted) {
             resolve(null);
             return;
@@ -305,9 +294,8 @@ function register(ipcMain) {
               'Authorization': `Bearer ${currentKey}`,
               'Accept': 'application/json'
             },
-            // XBH_AI_PATCH: 使用闭包内的 myController.signal
             signal: myController.signal,
-            timeout: REQUEST_TIMEOUT_MS // XBH_AI_PATCH: 请求超时，防止长时间挂起
+            timeout: REQUEST_TIMEOUT_MS
           }, (res) => {
             if (res.statusCode !== 200) {
               let errBody = '';
@@ -343,7 +331,6 @@ function register(ipcMain) {
                     explanation: parsed.explanation || ''
                   });
                 } else {
-                  // XBH_AI_PATCH: 没有匹配到 JSON，可能是 AI 返回格式异常，重试
                   if (retryCount < AI_MAX_RETRIES) {
                     retryCount++;
                     console.warn(`[SmartSearch] 块 ${chunk.index} 响应无 JSON，第 ${retryCount} 次重试…`);
@@ -353,7 +340,6 @@ function register(ipcMain) {
                   resolve({ chunkIndex: chunk.index, matchedLines: [], explanation: '' });
                 }
               } catch (e) {
-                // XBH_AI_PATCH: JSON 解析失败，重试
                 if (retryCount < AI_MAX_RETRIES) {
                   retryCount++;
                   console.warn(`[SmartSearch] 块 ${chunk.index} 解析失败: ${e.message}，第 ${retryCount} 次重试…`);
@@ -366,7 +352,6 @@ function register(ipcMain) {
             });
           });
 
-          // XBH_AI_PATCH: 请求超时处理
           req.on('timeout', () => {
             req.destroy(new Error('请求超时'));
           });
@@ -376,7 +361,6 @@ function register(ipcMain) {
               resolve(null);
               return;
             }
-            // XBH_AI_PATCH: 超时、网络错误都重试
             if (retryCount < AI_MAX_RETRIES) {
               retryCount++;
               console.warn(`[SmartSearch] 块 ${chunk.index} 错误: ${e.message}，第 ${retryCount} 次重试…`);
@@ -395,44 +379,34 @@ function register(ipcMain) {
       });
     }
 
-    // XBH_AI_PATCH_START
     // 用局部变量捕获 controller，防止 setTimeout 重试回调引用到被重置/替换的全局变量
     const myController = new AbortController();
     smartSearchAbortController = myController;
-    // XBH_AI_PATCH_END
 
     // 并行执行，控制并发数 - 增量推送匹配结果，让用户感知进度
     const allMatchedLines = [];
     const explanations = [];
 
-    // XBH_AI_PATCH_START
     // 改为：每个分块独立完成就立即推送，不等批次内其他分块
     // 使用信号量控制最大并发数，分块完成后立即推送结果
     let chunkIndex = 0;
     const concurrency = Math.min(SMART_SEARCH_MAX_CONCURRENT, chunks.length);
 
     async function runWorker() {
-      // XBH_AI_PATCH: 使用闭包内的 myController 而非全局变量
       while (chunkIndex < chunks.length && !myController.signal.aborted) {
         const myIndex = chunkIndex++;
         if (myIndex >= chunks.length) break;
         const chunk = chunks[myIndex];
 
-        // XBH_AI_PATCH_START: 本地精确匹配（100% 准确，兜底）
         const localMatched = localMatch(chunk.entries, queryKeywords, chunk.start);
-        // XBH_AI_PATCH_END
 
         const result = await searchChunk(chunk);
 
-        // XBH_AI_PATCH_START: 中止后不再处理结果和发送事件
         if (myController.signal.aborted) return;
-        // XBH_AI_PATCH_END
 
-        // XBH_AI_PATCH_START: 合并本地匹配 + AI 匹配，去重
         const aiMatched = result?.matchedLines || [];
         const mergedMatched = new Set([...localMatched, ...aiMatched]);
         const matchedLines = Array.from(mergedMatched).sort((a, b) => a - b);
-        // XBH_AI_PATCH_END
 
         if (matchedLines.length === 0) {
           completedChunks++;
@@ -485,16 +459,13 @@ function register(ipcMain) {
       workers.push(runWorker());
     }
     await Promise.all(workers);
-    // XBH_AI_PATCH_END
 
-    // XBH_AI_PATCH_START
     // 使用闭包内的 myController 检查中止状态，而非可能已被替换的全局变量
     const aborted = myController.signal.aborted;
     // 仅当全局变量仍指向自己的 controller 时才清理，避免清除了新搜索的 controller
     if (smartSearchAbortController === myController) {
       smartSearchAbortController = null;
     }
-    // XBH_AI_PATCH_END
 
     // 排序匹配行号
     allMatchedLines.sort((a, b) => a - b);
@@ -515,10 +486,8 @@ function register(ipcMain) {
       aborted
     };
 
-    // XBH_AI_PATCH_START
     // 中止后仍发送 complete 事件（渲染进程需要重置 smartSearching 状态），
     // 但渲染进程会通过 payload.aborted 判断是否使用结果
-    // XBH_AI_PATCH_END
     if (!sender.isDestroyed()) {
       sender.send('smart-search:complete', result);
     }
@@ -534,7 +503,6 @@ function register(ipcMain) {
     }
     return { ok: true };
   });
-  // XBH_AI_PATCH_END
 }
 
 module.exports = { register };

@@ -1,6 +1,6 @@
-// $XBH_AI_PATCH_START
 // App package management backend: package list/detail plus VIP-gated mutating actions.
 
+const { app } = require('electron');
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -10,6 +10,7 @@ const vip = require('./vip.cjs');
 const DEFAULT_TIMEOUT_MS = 20000;
 const LONG_TIMEOUT_MS = 60000;
 const BUNDLED_ADB_PATH = path.join(__dirname, '../../scrcpy-win64/adb.exe');
+const SNAPSHOT_DIR = 'package-manager';
 
 function register(ipcMain) {
   ipcMain.handle('package:list', async (event, args) => {
@@ -56,28 +57,59 @@ function register(ipcMain) {
     return { ok: true, localPath, sourcePath };
   }));
 
+  ipcMain.handle('package:snapshot', async (event, args) => {
+    const deviceId = normalizeDeviceId(args?.deviceId);
+    if (!deviceId) return { ok: false, error: 'device_required' };
+    try {
+      const packages = await listPackages(deviceId);
+      const output = await writePackageSnapshot(deviceId, packages, args?.outputPath);
+      return { ok: true, path: output.jsonPath, csvPath: output.csvPath, count: packages.length };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('package:launch', async (event, args) => {
+    const deviceId = normalizeDeviceId(args?.deviceId);
+    const packageName = normalizePackageName(args?.packageName);
+    if (!deviceId || !packageName) return { ok: false, error: 'device_or_package_required' };
+    const res = await runAdb(['-s', deviceId, 'shell', 'monkey', '-p', packageName, '-c', 'android.intent.category.LAUNCHER', '1'], DEFAULT_TIMEOUT_MS);
+    return adbMutationResult(res);
+  });
+
+  ipcMain.handle('package:batch', async (event, args) => withVip(async () => {
+    const deviceId = normalizeDeviceId(args?.deviceId);
+    const action = String(args?.action || '').trim();
+    const packageNames = normalizePackageNames(args?.packageNames).slice(0, 100);
+    if (!deviceId || !action || packageNames.length === 0) return { ok: false, error: 'device_action_or_packages_required' };
+    const results = [];
+    for (const packageName of packageNames) {
+      const res = await runPackageAction(deviceId, packageName, action, args || {});
+      results.push({ packageName, ...res });
+    }
+    const failed = results.filter(item => !item.ok);
+    return { ok: failed.length === 0, results, successCount: results.length - failed.length, failedCount: failed.length };
+  }));
+
   ipcMain.handle('package:uninstall', async (event, args) => withVip(async () => {
     const deviceId = normalizeDeviceId(args?.deviceId);
     const packageName = normalizePackageName(args?.packageName);
     if (!deviceId || !packageName) return { ok: false, error: 'device_or_package_required' };
-    const res = await runAdb(['-s', deviceId, 'shell', 'pm', 'uninstall', '--user', '0', packageName], LONG_TIMEOUT_MS);
-    return adbMutationResult(res);
+    return runPackageAction(deviceId, packageName, 'uninstall', args || {});
   }));
 
   ipcMain.handle('package:clearData', async (event, args) => withVip(async () => {
     const deviceId = normalizeDeviceId(args?.deviceId);
     const packageName = normalizePackageName(args?.packageName);
     if (!deviceId || !packageName) return { ok: false, error: 'device_or_package_required' };
-    const res = await runAdb(['-s', deviceId, 'shell', 'pm', 'clear', packageName], LONG_TIMEOUT_MS);
-    return adbMutationResult(res);
+    return runPackageAction(deviceId, packageName, 'clearData', args || {});
   }));
 
   ipcMain.handle('package:forceStop', async (event, args) => withVip(async () => {
     const deviceId = normalizeDeviceId(args?.deviceId);
     const packageName = normalizePackageName(args?.packageName);
     if (!deviceId || !packageName) return { ok: false, error: 'device_or_package_required' };
-    const res = await runAdb(['-s', deviceId, 'shell', 'am', 'force-stop', packageName], DEFAULT_TIMEOUT_MS);
-    return adbMutationResult(res);
+    return runPackageAction(deviceId, packageName, 'forceStop', args || {});
   }));
 
   ipcMain.handle('package:setEnabled', async (event, args) => withVip(async () => {
@@ -85,9 +117,7 @@ function register(ipcMain) {
     const packageName = normalizePackageName(args?.packageName);
     const enabled = args?.enabled === true;
     if (!deviceId || !packageName) return { ok: false, error: 'device_or_package_required' };
-    const verb = enabled ? 'enable' : 'disable-user';
-    const res = await runAdb(['-s', deviceId, 'shell', 'pm', verb, packageName], DEFAULT_TIMEOUT_MS);
-    return adbMutationResult(res);
+    return runPackageAction(deviceId, packageName, enabled ? 'enable' : 'disable', args || {});
   }));
 }
 
@@ -216,6 +246,51 @@ function adbMutationResult(res) {
   return { ok: false, error: res.error || res.stderr || res.stdout || 'adb_failed' };
 }
 
+async function runPackageAction(deviceId, packageName, action) {
+  if (action === 'forceStop') {
+    return adbMutationResult(await runAdb(['-s', deviceId, 'shell', 'am', 'force-stop', packageName], DEFAULT_TIMEOUT_MS));
+  }
+  if (action === 'clearData') {
+    return adbMutationResult(await runAdb(['-s', deviceId, 'shell', 'pm', 'clear', packageName], LONG_TIMEOUT_MS));
+  }
+  if (action === 'disable') {
+    return adbMutationResult(await runAdb(['-s', deviceId, 'shell', 'pm', 'disable-user', packageName], DEFAULT_TIMEOUT_MS));
+  }
+  if (action === 'enable') {
+    return adbMutationResult(await runAdb(['-s', deviceId, 'shell', 'pm', 'enable', packageName], DEFAULT_TIMEOUT_MS));
+  }
+  if (action === 'uninstall') {
+    return adbMutationResult(await runAdb(['-s', deviceId, 'shell', 'pm', 'uninstall', '--user', '0', packageName], LONG_TIMEOUT_MS));
+  }
+  return { ok: false, error: `unsupported_action:${action}` };
+}
+
+async function writePackageSnapshot(deviceId, packages, outputPath) {
+  const baseDir = path.join(app.getPath('userData'), SNAPSHOT_DIR);
+  await fs.promises.mkdir(baseDir, { recursive: true });
+  const filePath = outputPath && typeof outputPath === 'string'
+    ? path.resolve(outputPath)
+    : path.join(baseDir, `packages-${sanitizeName(deviceId)}-${formatStamp(new Date())}.json`);
+  const payload = { deviceId, exportedAt: new Date().toISOString(), count: packages.length, packages };
+  await fs.promises.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+  const csvPath = filePath.replace(/\.json$/i, '.csv');
+  await fs.promises.writeFile(csvPath, toPackageCsv(packages), 'utf8');
+  return { jsonPath: filePath, csvPath };
+}
+
+function toPackageCsv(packages) {
+  const rows = [['packageName', 'apkName', 'path', 'uid', 'versionCode', 'system', 'enabled']];
+  packages.forEach(item => {
+    rows.push([item.packageName, item.apkName, item.path, item.uid, item.versionCode, item.system, item.enabled].map(csvCell));
+  });
+  return rows.map(row => row.join(',')).join('\n');
+}
+
+function csvCell(value) {
+  const text = String(value ?? '');
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
 function runAdb(args, timeoutMs) {
   return new Promise((resolve) => {
     const adbCommand = fs.existsSync(BUNDLED_ADB_PATH) ? BUNDLED_ADB_PATH : 'adb';
@@ -239,11 +314,23 @@ function normalizePackageName(value) {
   return /^[A-Za-z0-9_.]+$/.test(name) ? name : '';
 }
 
+function normalizePackageNames(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map(normalizePackageName).filter(Boolean)));
+}
+
+function sanitizeName(value) {
+  return String(value || 'device').replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').slice(0, 80) || 'device';
+}
+
+function formatStamp(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
 function firstMatch(text, regex) {
   const match = String(text || '').match(regex);
   return match ? String(match[1] || '').trim() : '';
 }
 
 module.exports = { register, listPackages, getPackageDetail };
-
-// $XBH_AI_PATCH_END

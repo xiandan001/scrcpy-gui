@@ -1,4 +1,3 @@
-// XBH_AI_PATCH_START
 // MCP HTTP Server 集成 - 提供 AI 工具接口
 // 该模块启动一个 HTTP 服务器，实现 MCP（Model Context Protocol）协议
 // 通过 log-analyzer / ai-analyze 的 getter/setter 操作共享日志与 AI 状态
@@ -13,6 +12,9 @@ const https = require('https');
 const ctx = require('./app-context.cjs');
 const logAnalyzer = require('./log-analyzer.cjs');
 const aiAnalyze = require('./ai-analyze.cjs');
+const packageManager = require('./package-manager.cjs');
+const performanceMonitor = require('./performance-monitor.cjs');
+const inspection = require('./inspection.cjs');
 const vip = require('./vip.cjs');
 const { getAppVersion } = require('./version.cjs');
 const {
@@ -28,10 +30,8 @@ const MCP_PROTOCOL_VERSION = '2025-03-26';
 let mcpPort = 49321;
 let mcpServerInstance = null;
 const mcpSessions = new Map();
-// $XBH_AI_PATCH_START
 // MCP 会话清理定时器需要随服务生命周期启停，避免反复启动/停止后累积 interval。
 let mcpSessionCleanupTimer = null;
-// $XBH_AI_PATCH_END
 
 function buildMcpTools() {
   return [
@@ -76,6 +76,61 @@ function buildMcpTools() {
       name: 'log_sources',
       description: '列出可读取的日志源（realtime/file）及其当前条数',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+    },
+    {
+      name: 'package_list',
+      description: '列出指定设备已安装应用。默认只返回用户应用；showSystem=true 时包含系统应用。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          deviceId: { type: 'string', description: '设备 ID（从 device_list 获取）' },
+          showSystem: { type: 'boolean', description: '是否包含系统应用，默认 false' },
+          limit: { type: 'integer', minimum: 1, maximum: 1000, description: '最大返回数量，默认 200' }
+        },
+        required: ['deviceId'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'package_detail',
+      description: '读取指定应用的版本、路径、安装时间、启停状态和权限摘要。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          deviceId: { type: 'string', description: '设备 ID（从 device_list 获取）' },
+          packageName: { type: 'string', description: 'Android 包名，例如 com.example.app' }
+        },
+        required: ['deviceId', 'packageName'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'perf_snapshot',
+      description: '对指定设备执行一次性能采样，返回 CPU、内存、磁盘、电池、温度、FPS 和告警。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          deviceId: { type: 'string', description: '设备 ID（从 device_list 获取）' },
+          includeProcesses: { type: 'boolean', description: '是否包含进程占用；非会员会自动降级为 false' }
+        },
+        required: ['deviceId'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'inspection_run',
+      description: '对指定设备执行一次标准巡检并导出报告与证据包。bugreport 默认不包含，避免耗时过长。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          deviceId: { type: 'string', description: '设备 ID（从 device_list 获取）' },
+          includeBugreport: { type: 'boolean', description: '是否包含 bugreport，默认 false' },
+          includeAiSummary: { type: 'boolean', description: '是否包含 AI 总结，默认 true' },
+          outputBaseDir: { type: 'string', description: '可选输出目录；不填使用应用默认目录' }
+        },
+        required: ['deviceId'],
+        additionalProperties: false
+      }
     },
     {
       name: 'log_get',
@@ -146,7 +201,6 @@ function buildMcpTools() {
         additionalProperties: false
       }
     },
-    // XBH_AI_PATCH_START: AI 分析 MCP 工具
     {
       name: 'ai_analyze',
       description: '启动 AI 日志分析（非流式，等待完整结果后返回）。基于当前抓取的日志进行分析。可选传入自定义分析要求。',
@@ -183,7 +237,6 @@ function buildMcpTools() {
       description: '清空 AI 分析结果和对话上下文，使下一次分析从头开始。',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false }
     }
-    // XBH_AI_PATCH_END
   ];
 }
 
@@ -270,7 +323,6 @@ async function callMcpTool(name, args) {
     const adbArgs = [];
     if (deviceId) adbArgs.push('-s', deviceId);
     adbArgs.push('logcat', '-v', 'threadtime');
-    // XBH_AI_PATCH_START
     // 与 IPC adb:startLog 保持一致：支持 buffers 多缓冲区抓取
     const SUPPORTED_BUFFERS_MCP = ['main', 'system', 'radio', 'events', 'crash', 'kernel'];
     const wantedBuffers = Array.isArray(args.buffers)
@@ -279,7 +331,6 @@ async function callMcpTool(name, args) {
     if (wantedBuffers.length > 0) {
       wantedBuffers.forEach(b => adbArgs.push('-b', b));
     }
-    // XBH_AI_PATCH_END
     const p = spawn('adb', adbArgs, { windowsHide: true });
     logAnalyzer.setLogcatProc(p);
 
@@ -293,7 +344,6 @@ async function callMcpTool(name, args) {
       const pkg = resolvePkg(entry.pid);
       if (pkg) entry.pkg = pkg;
       logStore.realtime.push(entry);
-      // XBH_AI_PATCH_START
       // 按字节限制 + 条数上限双重保护（与 IPC adb:startLog 保持一致）
       const logStoreBytes = logAnalyzer.getLogStoreBytes();
       const LOG_STORE_BYTES_LIMIT = logAnalyzer.getLogStoreBytesLimit();
@@ -309,35 +359,70 @@ async function callMcpTool(name, args) {
         const removed = logStore.realtime.shift();
         logStoreBytes.realtime -= Buffer.byteLength(removed.raw || '', 'utf8');
       }
-      // XBH_AI_PATCH_END
-      // XBH_AI_PATCH_START
       // 批量发送：累积日志条目，每 100ms 或满 50 条时批量发送（减少 IPC 调用）
       pushLogToBatch(entry);
-      // XBH_AI_PATCH_END
     });
-    // XBH_AI_PATCH_START
     // 消费 stderr 防止缓冲区满导致进程挂起（参考 IPC adb:startLog 实现）
     p.stderr.on('data', () => {});
-    // XBH_AI_PATCH_END
     p.on('exit', () => {
       rl.close();
       if (logAnalyzer.getLogcatProc() === p) logAnalyzer.setLogcatProc(null);
-      // XBH_AI_PATCH_START
       // 进程退出时 flush 剩余批次，避免日志丢失
       logAnalyzer.clearLogBatchFlushTimer();
       logAnalyzer.getFlushLogBatch()();
-      // XBH_AI_PATCH_END
     });
     return mcpText({ ok: true, message: deviceId ? `已开始在设备 ${deviceId} 上抓取日志` : '已开始在默认设备上抓取日志' });
   }
 
+  if (name === 'package_list') {
+    const deviceId = normalizeMcpDeviceId(args.deviceId);
+    if (!deviceId) return mcpText({ ok: false, error: 'device_required' });
+    const limit = Math.max(1, Math.min(Number(args.limit ?? 200) || 200, 1000));
+    const packages = await packageManager.listPackages(deviceId);
+    const filtered = args.showSystem === true ? packages : packages.filter(item => !item.system);
+    return mcpText({ ok: true, deviceId, count: filtered.length, packages: filtered.slice(0, limit) });
+  }
+
+  if (name === 'package_detail') {
+    const deviceId = normalizeMcpDeviceId(args.deviceId);
+    const packageName = normalizeMcpPackageName(args.packageName);
+    if (!deviceId || !packageName) return mcpText({ ok: false, error: 'device_or_package_required' });
+    const detail = await packageManager.getPackageDetail(deviceId, packageName);
+    return mcpText({ ok: true, deviceId, detail });
+  }
+
+  if (name === 'perf_snapshot') {
+    const deviceId = normalizeMcpDeviceId(args.deviceId);
+    if (!deviceId) return mcpText({ ok: false, error: 'device_required' });
+    const status = await vip.getStatusAsync();
+    const includeProcesses = status.activated === true && args.includeProcesses !== false;
+    const snapshot = await performanceMonitor.collectSnapshot(deviceId, includeProcesses);
+    return mcpText({ ok: true, deviceId, snapshot });
+  }
+
+  if (name === 'inspection_run') {
+    const deviceId = normalizeMcpDeviceId(args.deviceId);
+    if (!deviceId) return mcpText({ ok: false, error: 'device_required' });
+    const status = await vip.getStatusAsync();
+    if (!status.activated) {
+      return mcpText({ ok: false, code: 'vip_required', error: '设备巡检为会员专属功能，请先开通会员' });
+    }
+    const task = { id: `mcp-inspection-${Date.now()}`, deviceId, sender: null, cancelled: false, currentProc: null };
+    const result = await inspection.runInspection(task, {
+      deviceId,
+      deviceLabel: deviceId,
+      includeBugreport: args.includeBugreport === true,
+      includeAiSummary: args.includeAiSummary !== false,
+      outputBaseDir: args.outputBaseDir
+    });
+    return mcpText({ ok: result.ok, deviceId, result });
+  }
+
   if (name === 'capture_stop') {
     logAnalyzer.getStopPidPackageResolver()();
-    // XBH_AI_PATCH_START
     // 停止抓取时 flush 剩余批次，避免日志丢失
     logAnalyzer.clearLogBatchFlushTimer();
     logAnalyzer.getFlushLogBatch()();
-    // XBH_AI_PATCH_END
     const proc = logAnalyzer.getLogcatProc();
     if (proc) { try { proc.kill(); } catch {} logAnalyzer.setLogcatProc(null); }
     return mcpText({ ok: true, message: '已停止抓取' });
@@ -413,7 +498,6 @@ async function callMcpTool(name, args) {
     });
   }
 
-  // XBH_AI_PATCH_START: AI 分析 MCP 工具实现
   if (name === 'ai_analyze') {
     const source = args.source ?? 'realtime';
     const filter = args.filter ?? {};
@@ -511,7 +595,6 @@ async function callMcpTool(name, args) {
     aiAnalyze.clearAiConversation();
     return mcpText({ ok: true, message: 'AI 分析结果和对话上下文已清空' });
   }
-  // XBH_AI_PATCH_END
 
   throw new Error(`Unknown tool: ${name}`);
 }
@@ -601,12 +684,10 @@ function startMcpHttpServer() {
         res.setHeader('Connection', 'keep-alive');
         res.statusCode = 200;
         res.write(': ping\n\n');
-        // XBH_AI_PATCH_START
         // 客户端关闭连接时显式结束响应，清理 SSE 连接资源，防止句柄泄漏
         req.on('close', () => {
           try { res.end(); } catch {}
         });
-        // XBH_AI_PATCH_END
         return;
       }
       if (req.method === 'DELETE') {
@@ -628,8 +709,6 @@ function initMcpServer() {
     console.log(`[MCP] Server listening on http://127.0.0.1:${mcpPort}`);
     mcpServerInstance = server;
   });
-  // $XBH_AI_PATCH_START
-  // $XBH_AI_PATCH_MODIFY: 只创建一个会话清理定时器，服务关闭时由 closeMcpServer 清理。
   if (!mcpSessionCleanupTimer) {
     mcpSessionCleanupTimer = setInterval(() => {
       const now = Date.now();
@@ -639,7 +718,6 @@ function initMcpServer() {
     }, 300000);
     mcpSessionCleanupTimer.unref?.();
   }
-  // $XBH_AI_PATCH_END
 }
 
 function register(ipcMain) {
@@ -649,7 +727,6 @@ function register(ipcMain) {
 
   ipcMain.handle('mcp:start', async () => {
     try {
-      // XBH_AI_PATCH: VIP 校验 - 非会员拒绝启动 MCP
       const status = vip.getStatus();
       if (!status.activated) {
         return { ok: false, running: false, error: 'VIP 会员专属功能，请先开通会员', code: 'vip_required' };
@@ -662,10 +739,7 @@ function register(ipcMain) {
   });
 
   ipcMain.handle('mcp:stop', async () => {
-    // $XBH_AI_PATCH_START
-    // $XBH_AI_PATCH_MODIFY: 复用统一清理函数，确保 HTTP server、session 和清理定时器一起释放。
     closeMcpServer();
-    // $XBH_AI_PATCH_END
     return { ok: true, running: false };
   });
 }
@@ -678,13 +752,20 @@ function closeMcpServer() {
     } catch (e) { /* ignore */ }
     mcpServerInstance = null;
   }
-  // $XBH_AI_PATCH_START
   if (mcpSessionCleanupTimer) {
     clearInterval(mcpSessionCleanupTimer);
     mcpSessionCleanupTimer = null;
   }
   mcpSessions.clear();
-  // $XBH_AI_PATCH_END
+}
+
+function normalizeMcpDeviceId(value) {
+  return String(value || '').trim();
+}
+
+function normalizeMcpPackageName(value) {
+  const name = String(value || '').trim();
+  return /^[A-Za-z0-9_.]+$/.test(name) ? name : '';
 }
 
 module.exports = {

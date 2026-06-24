@@ -1,4 +1,3 @@
-// XBH_AI_PATCH_START
 // AI 日志分析集成 - Agnes AI 流式调用
 // 该模块管理：
 //   - aiConversationMessages / aiConversationBytes：多轮对话上下文
@@ -34,12 +33,10 @@ let aiLastResult = '';
 
 // 添加对话消息并限制上下文长度，防止内存无限增长
 function pushAiMessages(userContent, assistantContent) {
-  // XBH_AI_PATCH_START
   // 字节总量追踪 + 双重限制（条数 + 字节）
   const userBytes = Buffer.byteLength(userContent || '', 'utf8');
   const assistantBytes = Buffer.byteLength(assistantContent || '', 'utf8');
   aiConversationBytes += userBytes + assistantBytes;
-  // XBH_AI_PATCH_END
   aiConversationMessages.push({ role: 'user', content: userContent });
   aiConversationMessages.push({ role: 'assistant', content: assistantContent });
   // 保留 system 消息 + 最近 N 条
@@ -47,14 +44,11 @@ function pushAiMessages(userContent, assistantContent) {
     const systemMsgs = aiConversationMessages.filter(m => m.role === 'system');
     const recentMsgs = aiConversationMessages.slice(-AI_MAX_CONTEXT_MESSAGES);
     aiConversationMessages = [...systemMsgs, ...recentMsgs.filter(m => m.role !== 'system')];
-    // XBH_AI_PATCH_START
     // 条数截断后重新计算字节总量
     aiConversationBytes = aiConversationMessages.reduce(
       (sum, m) => sum + Buffer.byteLength(m.content || '', 'utf8'), 0
     );
-    // XBH_AI_PATCH_END
   }
-  // XBH_AI_PATCH_START
   // 字节上限 2MB：从最早的非 system 消息开始删除，直到字节数降到上限以下
   while (aiConversationBytes > AI_MAX_CONTEXT_BYTES) {
     const idx = aiConversationMessages.findIndex(m => m.role !== 'system');
@@ -62,7 +56,6 @@ function pushAiMessages(userContent, assistantContent) {
     const removed = aiConversationMessages.splice(idx, 1)[0];
     aiConversationBytes -= Buffer.byteLength(removed.content || '', 'utf8');
   }
-  // XBH_AI_PATCH_END
 }
 
 function buildAiSystemPrompt(filterContext) {
@@ -434,6 +427,94 @@ function clearAiConversation() {
   aiLastResult = '';
 }
 
+function generateAiSummary({ systemPrompt, userContent, timeoutMs = 60000, temperature = 0.2 }) {
+  return new Promise((resolve) => {
+    if (!AGNES_API_KEYS || AGNES_API_KEYS.length === 0) {
+      resolve({ ok: false, error: 'AI Key 未配置' });
+      return;
+    }
+
+    const urlObj = new URL(AGNES_API_URL);
+    const requestBody = JSON.stringify({
+      model: AGNES_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent }
+      ],
+      stream: false,
+      temperature
+    });
+    const maxRetries = 2;
+    let retryCount = 0;
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (result.ok && result.summary) aiLastResult = result.summary;
+      resolve(result);
+    };
+
+    const doRequest = (apiKey) => {
+      let req = null;
+      const timer = setTimeout(() => {
+        try { req?.destroy?.(); } catch {}
+        finish({ ok: false, error: `AI 总结超时（${timeoutMs}ms）` });
+      }, timeoutMs);
+
+      req = https.request({
+        hostname: urlObj.hostname,
+        port: 443,
+        path: urlObj.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        }
+      }, (res) => {
+        let body = '';
+        res.on('data', chunk => { body += chunk; });
+        res.on('end', () => {
+          clearTimeout(timer);
+          if (settled) return;
+          if (res.statusCode !== 200) {
+            if (retryCount < maxRetries && (res.statusCode === 429 || res.statusCode >= 500)) {
+              retryCount += 1;
+              doRequest(getNextApiKey());
+              return;
+            }
+            finish({ ok: false, error: `API返回 ${res.statusCode}: ${body.slice(0, 300)}` });
+            return;
+          }
+          try {
+            const json = JSON.parse(body);
+            const summary = json.choices?.[0]?.message?.content || '';
+            finish(summary ? { ok: true, summary } : { ok: false, error: 'AI 总结为空' });
+          } catch (error) {
+            finish({ ok: false, error: `解析 AI 响应失败: ${error.message}` });
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        clearTimeout(timer);
+        if (settled) return;
+        if (retryCount < maxRetries) {
+          retryCount += 1;
+          doRequest(getNextApiKey());
+          return;
+        }
+        finish({ ok: false, error: error.message });
+      });
+
+      req.write(requestBody);
+      req.end();
+    };
+
+    doRequest(AGNES_API_KEYS[getAgnesKeyIndex()]);
+  });
+}
+
 module.exports = {
   register,
   // 共享给其他模块的工具
@@ -451,6 +532,7 @@ module.exports = {
   resetAiState,
   setAiLastResult,
   clearAiConversation,
+  generateAiSummary,
   // 共享 keys 引用（供 auto-diagnose / smart-search 直接使用）
   aiKeys,
 };
