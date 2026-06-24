@@ -231,6 +231,16 @@ const CHANGELOGS = {
       { type: 'fix', text: '修复部分错误' }
     ]
   },
+  '3.6.2': {
+    title: 'v3.6.2',
+    date: '2026-06-24',
+    items: [
+      { type: 'feature', text: '新增任务中心保存路径设置，支持自定义任务产物目录' },
+      { type: 'improve', text: '优化任务中心运行历史展示和目录打开体验' },
+      { type: 'improve', text: '优化用户体验' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
+  },
   '3.6.1': {
     title: 'v3.6.1',
     date: '2026-06-24',

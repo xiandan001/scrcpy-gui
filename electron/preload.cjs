@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadInspectionPath: () => ipcRenderer.invoke('settings:loadInspectionPath'),
   savePerformancePath: (path) => ipcRenderer.invoke('settings:savePerformancePath', path),
   loadPerformancePath: () => ipcRenderer.invoke('settings:loadPerformancePath'),
+  saveTaskCenterPath: (path) => ipcRenderer.invoke('settings:saveTaskCenterPath', path),
+  loadTaskCenterPath: () => ipcRenderer.invoke('settings:loadTaskCenterPath'),
   selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
   getUserDataPath: () => ipcRenderer.invoke('app:getUserDataPath'),
   // 版本号统一管理：渲染进程获取应用版本

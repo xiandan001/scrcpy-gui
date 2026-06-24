@@ -1,5 +1,5 @@
 // 设置存储 IPC handlers
-// 持久化用户设置：自定义主题、截图保存路径、录屏保存路径、巡检保存路径、性能导出路径、推送远程路径历史
+// 持久化用户设置：自定义主题、截图保存路径、录屏保存路径、巡检保存路径、性能导出路径、任务中心路径、推送远程路径历史
 
 const { app } = require('electron');
 const fs = require('fs');
@@ -170,6 +170,41 @@ function register(ipcMain) {
       return { success: true, data: null };
     } catch (error) {
       console.error('Failed to load performance path:', error);
+      return { success: false, error: error.message, data: null };
+    }
+  });
+
+  // 任务中心保存路径设置持久化
+  ipcMain.handle('settings:saveTaskCenterPath', async (event, taskCenterPath) => {
+    try {
+      const userDataPath = app.getPath('userData');
+      const settingsFilePath = path.join(userDataPath, 'settings.json');
+      let settings = {};
+      if (fs.existsSync(settingsFilePath)) {
+        const data = fs.readFileSync(settingsFilePath, 'utf-8');
+        settings = JSON.parse(data);
+      }
+      settings.taskCenterPath = taskCenterPath;
+      fs.writeFileSync(settingsFilePath, JSON.stringify(settings, null, 2), 'utf-8');
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to save task center path:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('settings:loadTaskCenterPath', async () => {
+    try {
+      const userDataPath = app.getPath('userData');
+      const settingsFilePath = path.join(userDataPath, 'settings.json');
+      if (fs.existsSync(settingsFilePath)) {
+        const data = fs.readFileSync(settingsFilePath, 'utf-8');
+        const settings = JSON.parse(data);
+        return { success: true, data: settings.taskCenterPath || null };
+      }
+      return { success: true, data: null };
+    } catch (error) {
+      console.error('Failed to load task center path:', error);
       return { success: false, error: error.message, data: null };
     }
   });
