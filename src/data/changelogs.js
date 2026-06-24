@@ -231,6 +231,14 @@ const CHANGELOGS = {
       { type: 'fix', text: '修复部分错误' }
     ]
   },
+  '3.6.1': {
+    title: 'v3.6.1',
+    date: '2026-06-24',
+    items: [
+      { type: 'improve', text: '优化应用更新稳定性' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
+  },
   '3.6.0': {
     title: 'v3.6.0',
     date: '2026-06-24',
