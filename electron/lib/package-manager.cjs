@@ -130,7 +130,8 @@ async function getPackageDetail(deviceId, packageName) {
     firstInstallTime: firstMatch(text, /firstInstallTime=([^\n]+)/),
     lastUpdateTime: firstMatch(text, /lastUpdateTime=([^\n]+)/),
     installer: firstMatch(text, /installerPackageName=([^\s]+)/),
-    enabled: !/enabled=0|enabled=false|enabled=disabled/i.test(text),
+    enabled: parsePackageEnabled(text),
+    enabledState: parsePackageEnabledState(text),
     system: basic.system || /pkgFlags=\[[^\]]*\bSYSTEM\b/i.test(text) || String(basic.path || '').startsWith('/system'),
     apkPath: firstMatch(text, /codePath=([^\n]+)/) || basic.path,
     permissions: parsePermissions(text),
@@ -156,6 +157,24 @@ function parsePackageLine(line) {
     system: String(apkPath || '').startsWith('/system') || String(apkPath || '').startsWith('/product') || String(apkPath || '').startsWith('/vendor'),
     enabled: true
   };
+}
+
+function parsePackageEnabled(text) {
+  const state = normalizeEnabledState(parsePackageEnabledState(text));
+  if (!state) return true;
+  return !new Set(['2', '3', '4', 'false', 'disabled', 'disabled-user', 'disabled_until_used', 'disabled-until-used']).has(state);
+}
+
+function parsePackageEnabledState(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const userStateLine = lines.find(line => /^User\s+\d+:/i.test(line.trim()) && /\benabled=/i.test(line));
+  const state = firstMatch(userStateLine || '', /\benabled=([^\s]+)/i);
+  if (state) return state;
+  return firstMatch(text, /\benabled=([^\s]+)/i);
+}
+
+function normalizeEnabledState(value) {
+  return String(value || '').trim().replace(/[,\]]+$/, '').toLowerCase();
 }
 
 function parsePermissions(text) {

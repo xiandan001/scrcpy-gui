@@ -224,6 +224,14 @@ const CHANGELOGS = {
       { type: 'improve', text: '优化应用性能' },
       { type: 'fix', text: '修复部分错误' }
     ]
+  },
+  // v3.5.3 发版更新说明：APK 管理修复按规范使用泛化措辞。
+  '3.5.3': {
+    title: 'v3.5.3',
+    date: '2026-06-24',
+    items: [
+      { type: 'fix', text: '修复部分错误' }
+    ]
   }
   // $XBH_AI_PATCH_END
 };
@@ -242,7 +250,7 @@ function compareVersions(v1, v2) {
     if (a > b) return 1;
     if (a < b) return -1;
   }
-  return 0;
+return 0;
 }
 // XBH_AI_PATCH_END
 
