@@ -1,5 +1,5 @@
 // $XBH_AI_PATCH_START
-// 性能监控后端：采集设备 CPU/内存/磁盘/电池/温度/进程快照，并通过 IPC 推送给渲染进程。
+// 性能监控后端：采集设备 CPU/内存/磁盘/电池/温度/FPS/进程快照，并通过 IPC 推送给渲染进程。
 
 const { app } = require('electron');
 const { execFile } = require('child_process');
@@ -10,17 +10,32 @@ const ctx = require('./app-context.cjs');
 const vip = require('./vip.cjs');
 
 const BUNDLED_ADB_PATH = path.join(__dirname, '../../scrcpy-win64/adb.exe');
-const DEFAULT_INTERVAL_MS = 5000;
+// $XBH_AI_PATCH_START
+// 默认 3 秒采样，减少性能面板数值延后感；1 秒高频仍由会员权限控制。
+const DEFAULT_INTERVAL_MS = 3000;
+// $XBH_AI_PATCH_END
 const VIP_MIN_INTERVAL_MS = 1000;
 const FREE_HISTORY_LIMIT = 60;
 const VIP_HISTORY_LIMIT = 720;
 const COMMAND_TIMEOUT_MS = 15000;
+// $XBH_AI_PATCH_START
+// FPS 采样依赖 dumpsys，单独缩短超时，避免帧率命令拖慢基础指标。
+const FPS_COMMAND_TIMEOUT_MS = 8000;
+const SURFACE_LAYER_CACHE_MS = 10000;
+// $XBH_AI_PATCH_END
 const EXPORT_DIR = 'performance-monitor';
 const THRESHOLDS_FILE = 'performance-thresholds.json';
 
 const monitors = new Map();
 const historyByDevice = new Map();
 const cpuTicksByDevice = new Map();
+// $XBH_AI_PATCH_START
+// 保存帧率上一次采样点，用差值计算当前窗口内 FPS。
+const gfxFrameStatsByDevice = new Map();
+const surfaceFrameStatsByDevice = new Map();
+const surfaceLayerCacheByDevice = new Map();
+const fpsDisplayByMetric = new Map();
+// $XBH_AI_PATCH_END
 let thresholdCache = null;
 
 const DEFAULT_THRESHOLDS = {
@@ -147,13 +162,17 @@ async function runMonitorTick(monitor) {
 // $XBH_AI_PATCH_END
 
 async function collectSnapshot(deviceId, includeProcesses) {
-  const [cpu, meminfo, df, battery, thermal, top] = await Promise.all([
+  const [cpu, meminfo, df, battery, thermal, top, fps] = await Promise.all([
     runAdb(['-s', deviceId, 'shell', 'cat', '/proc/stat']),
     runAdb(['-s', deviceId, 'shell', 'cat', '/proc/meminfo']),
     runAdb(['-s', deviceId, 'shell', 'df', '-k']),
     runAdb(['-s', deviceId, 'shell', 'dumpsys', 'battery']),
     runAdb(['-s', deviceId, 'shell', 'dumpsys', 'thermalservice']),
-    includeProcesses ? runTop(deviceId) : Promise.resolve({ ok: true, stdout: '' })
+    includeProcesses ? runTop(deviceId) : Promise.resolve({ ok: true, stdout: '' }),
+    // $XBH_AI_PATCH_START
+    // FPS 采样失败不影响基础性能指标。
+    collectFps(deviceId).catch(error => buildEmptyFps(error.message))
+    // $XBH_AI_PATCH_END
   ]);
   const snapshot = {
     timestamp: Date.now(),
@@ -163,6 +182,7 @@ async function collectSnapshot(deviceId, includeProcesses) {
     disk: parseDisk(df.stdout),
     battery: parseBattery(battery.stdout),
     thermal: parseThermal(thermal.stdout),
+    fps,
     processes: includeProcesses ? parseTop(top.stdout) : [],
     warnings: []
   };
@@ -269,6 +289,323 @@ function parseTop(text) {
   }).filter(item => item.pid);
 }
 
+// $XBH_AI_PATCH_START
+// 采集前台应用 FPS 与 SurfaceFlinger 合成 FPS。
+async function collectFps(deviceId) {
+  const foreground = await getForegroundApp(deviceId);
+  const [foregroundFps, surfaceFlingerFps] = await Promise.all([
+    collectForegroundFps(deviceId, foreground),
+    collectSurfaceFlingerFps(deviceId, foreground)
+  ]);
+  return {
+    foreground: foregroundFps,
+    surfaceFlinger: surfaceFlingerFps
+  };
+}
+
+function buildEmptyFps(error) {
+  return {
+    foreground: { fps: null, packageName: '', activityName: '', error: error || '' },
+    surfaceFlinger: { fps: null, layer: '', refreshRate: null, error: error || '' }
+  };
+}
+
+async function getForegroundApp(deviceId) {
+  const res = await runAdb(['-s', deviceId, 'shell', 'dumpsys', 'window'], FPS_COMMAND_TIMEOUT_MS);
+  if (!res.ok) return { packageName: '', activityName: '', component: '', error: res.error || res.stderr || '' };
+  return parseForegroundWindow(res.stdout);
+}
+
+function parseForegroundWindow(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const preferred = [
+    /mCurrentFocus=.*?([A-Za-z0-9_.]+)\/([A-Za-z0-9_.$]+)\b/,
+    /topResumedActivity=.*?([A-Za-z0-9_.]+)\/([A-Za-z0-9_.$]+)\b/,
+    /mFocusedApp=.*?([A-Za-z0-9_.]+)\/([A-Za-z0-9_.$]+)\b/
+  ];
+  for (const regex of preferred) {
+    for (const line of lines) {
+      const match = line.match(regex);
+      if (match) {
+        const packageName = match[1];
+        const activityName = normalizeActivityName(packageName, match[2]);
+        return { packageName, activityName, component: `${packageName}/${activityName}` };
+      }
+    }
+  }
+  return { packageName: '', activityName: '', component: '' };
+}
+
+async function collectForegroundFps(deviceId, foreground) {
+  if (!foreground.packageName) return { fps: null, ...foreground, source: 'window' };
+  const res = await runAdb(['-s', deviceId, 'shell', 'dumpsys', 'gfxinfo', foreground.packageName, 'framestats'], FPS_COMMAND_TIMEOUT_MS);
+  if (!res.ok) {
+    return { fps: null, ...foreground, source: 'gfxinfo', error: res.error || res.stderr || '' };
+  }
+  return {
+    ...parseGfxInfoFps(deviceId, foreground.packageName, res.stdout),
+    ...foreground,
+    source: 'gfxinfo'
+  };
+}
+
+function parseGfxInfoFps(deviceId, packageName, text) {
+  const totalFrames = firstNumber(text, /Total frames rendered:\s*(\d+)/i);
+  const jankyFrames = firstNumber(text, /Janky frames:\s*(\d+)/i);
+  const key = `${deviceId}:${packageName}`;
+  const rows = parseGfxFrameRows(text);
+  const targetFrameNs = getTargetFrameNs(rows);
+  const targetFps = targetFrameNs ? framePeriodToFps(targetFrameNs) : null;
+  const prev = gfxFrameStatsByDevice.get(key);
+  const newestFrameNs = rows.reduce((max, row) => Math.max(max, row.completed || row.intended || 0), 0);
+  let windowRows = [];
+  let state = 'initial';
+  let deltaFrames = 0;
+  let deltaJankyFrames = 0;
+  if (prev?.lastFrameNs && newestFrameNs) {
+    windowRows = rows.filter(row => (row.completed || row.intended || 0) > prev.lastFrameNs);
+    state = windowRows.length > 0 ? 'active' : 'idle';
+  }
+  if (prev && totalFrames != null && totalFrames >= prev.totalFrames) {
+    deltaFrames = totalFrames - prev.totalFrames;
+    deltaJankyFrames = Math.max(0, (jankyFrames || 0) - (prev.jankyFrames || 0));
+    if (deltaFrames > 0 && state === 'idle') state = 'active';
+  }
+  if (newestFrameNs) {
+    gfxFrameStatsByDevice.set(key, { lastFrameNs: newestFrameNs, targetFrameNs, totalFrames, jankyFrames });
+  }
+  // $XBH_AI_PATCH_START
+  // 前台 FPS 主值按累计帧/卡顿帧折算。framestats 单帧耗时会把轻微滑动误判成 30/40 FPS，
+  // 但用户实际看到的是流畅动画；只有 janky frames 明确增加时才降低主显示。
+  const rawFps = state === 'active' && deltaFrames > 0
+    ? estimateEffectiveFpsFromFrameDelta(deltaFrames, deltaJankyFrames, targetFps)
+    : targetFps;
+  // $XBH_AI_PATCH_END
+  const fps = smoothFpsValue(`foreground:${key}`, rawFps, targetFps, state);
+  return {
+    fps: roundFps(fps ?? targetFps),
+    rawFps: roundFps(rawFps ?? targetFps),
+    targetFps,
+    frames: state === 'active' ? (windowRows.length || deltaFrames) : 0,
+    state,
+    totalFrames,
+    jankyFrames,
+    jankPercent: totalFrames ? Number(((jankyFrames || 0) / totalFrames * 100).toFixed(1)) : null
+  };
+}
+
+function parseGfxFrameRows(text) {
+  const lines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const headerIndex = lines.findIndex(line => line.startsWith('Flags,') && line.includes('IntendedVsync'));
+  if (headerIndex < 0) return [];
+  const header = lines[headerIndex].split(',');
+  const intendedIndex = header.indexOf('IntendedVsync');
+  const completedIndex = header.indexOf('FrameCompleted');
+  const intervalIndex = header.indexOf('FrameInterval');
+  const rows = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    if (line.startsWith('---PROFILEDATA---')) break;
+    const parts = line.split(',');
+    const flags = Number(parts[0]);
+    if (flags !== 0) continue;
+    const completed = Number(parts[completedIndex]);
+    const intended = Number(parts[intendedIndex]);
+    const frameInterval = Number(parts[intervalIndex]);
+    if (Number.isFinite(intended) && intended > 0) {
+      rows.push({
+        intended,
+        completed: Number.isFinite(completed) && completed > 0 ? completed : 0,
+        frameInterval: Number.isFinite(frameInterval) && frameInterval > 0 ? frameInterval : null
+      });
+    }
+  }
+  return rows;
+}
+
+function estimateEffectiveFpsFromFrameDelta(frames, jankyFrames, targetFps) {
+  if (!targetFps || frames <= 0) return targetFps;
+  const goodFrames = Math.max(0, frames - Math.max(0, jankyFrames || 0));
+  return targetFps * goodFrames / frames;
+}
+
+async function collectSurfaceFlingerFps(deviceId, foreground) {
+  const layer = await getSurfaceLayer(deviceId, foreground);
+  if (!layer) {
+    const res = await runAdb(['-s', deviceId, 'shell', 'dumpsys', 'SurfaceFlinger', '--latency'], FPS_COMMAND_TIMEOUT_MS);
+    const framePeriodNs = parseFramePeriod(res.stdout);
+    const refreshRate = framePeriodToFps(framePeriodNs);
+    return {
+      fps: refreshRate,
+      layer: '',
+      refreshRate,
+      framePeriodMs: framePeriodNs ? Number((framePeriodNs / 1e6).toFixed(2)) : null,
+      state: 'refresh_rate',
+      source: 'surfaceflinger'
+    };
+  }
+  const res = await runAdb(['-s', deviceId, 'shell', 'dumpsys', 'SurfaceFlinger', '--latency', layer], FPS_COMMAND_TIMEOUT_MS);
+  if (!res.ok) {
+    return { fps: null, layer, refreshRate: null, source: 'surfaceflinger', error: res.error || res.stderr || '' };
+  }
+  return parseSurfaceLatency(deviceId, layer, res.stdout);
+}
+
+async function getSurfaceLayer(deviceId, foreground) {
+  const packageName = foreground.packageName || '';
+  const cached = surfaceLayerCacheByDevice.get(deviceId);
+  if (cached && cached.packageName === packageName && Date.now() - cached.updatedAt < SURFACE_LAYER_CACHE_MS) {
+    return cached.layer;
+  }
+  const res = await runAdb(['-s', deviceId, 'shell', 'dumpsys', 'SurfaceFlinger', '--list'], FPS_COMMAND_TIMEOUT_MS);
+  if (!res.ok) return '';
+  const layer = pickSurfaceLayer(parseSurfaceLayers(res.stdout), foreground);
+  surfaceLayerCacheByDevice.set(deviceId, { packageName, layer, updatedAt: Date.now() });
+  return layer;
+}
+
+function parseSurfaceLayers(text) {
+  return String(text || '').split(/\r?\n/)
+    .map(line => line.trim())
+    .map(line => {
+      const requested = line.match(/^RequestedLayerState\{(.+?#[0-9]+)/);
+      return requested ? requested[1].trim() : line;
+    })
+    .filter(Boolean);
+}
+
+function pickSurfaceLayer(layers, foreground) {
+  const packageName = String(foreground.packageName || '').toLowerCase();
+  const activityName = String(foreground.activityName || '').toLowerCase();
+  const activitySimple = activityName.split('.').filter(Boolean).pop() || '';
+  let best = { layer: '', score: 0 };
+  layers.forEach(layer => {
+    const lower = layer.toLowerCase();
+    let score = 0;
+    if (packageName && lower.includes(packageName)) score += 60;
+    if (activityName && lower.includes(activityName)) score += 30;
+    if (activitySimple && lower.includes(activitySimple)) score += 10;
+    if (!/\s/.test(layer)) score += 8;
+    if (/inputsink|activityrecord|statusbar|navigationbar|taskbar|wallpaper|sprite/i.test(layer)) score -= 40;
+    if (score > best.score) best = { layer, score };
+  });
+  return best.score > 0 ? best.layer : '';
+}
+
+function parseSurfaceLatency(deviceId, layer, text) {
+  const lines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const framePeriodNs = parseFramePeriod(text);
+  const timestamps = lines.slice(1)
+    .map(line => line.split(/\s+/).map(value => Number(value)))
+    .filter(parts => parts.length >= 3)
+    .map(parts => parts[1] || parts[0])
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  const key = `${deviceId}:${layer}`;
+  const prev = surfaceFrameStatsByDevice.get(key);
+  let rawFps = null;
+  let frames = 0;
+  const refreshRate = framePeriodToFps(framePeriodNs);
+  let state = 'estimate';
+  if (prev && timestamps.length > 0) {
+    const fresh = timestamps.filter(value => value > prev.lastPresentNs);
+    frames = fresh.length;
+    rawFps = fresh.length > 1 ? estimateEffectiveFpsFromPresentTimes(fresh, framePeriodNs) : refreshRate;
+    state = fresh.length > 0 ? 'active' : 'idle';
+  } else if (timestamps.length >= 2) {
+    frames = 0;
+    rawFps = refreshRate;
+    state = 'initial';
+  } else if (framePeriodNs) {
+    rawFps = refreshRate;
+    state = 'idle';
+  }
+  if (timestamps.length > 0) {
+    surfaceFrameStatsByDevice.set(key, { lastPresentNs: timestamps[timestamps.length - 1] });
+  }
+  const fps = smoothFpsValue(`surface:${key}`, rawFps, refreshRate, state);
+  return {
+    fps: roundFps(fps ?? refreshRate),
+    rawFps: roundFps(rawFps ?? refreshRate),
+    frames,
+    state,
+    layer,
+    refreshRate,
+    framePeriodMs: framePeriodNs ? Number((framePeriodNs / 1e6).toFixed(2)) : null,
+    source: 'surfaceflinger'
+  };
+}
+
+function estimateEffectiveFpsFromPresentTimes(timestamps, framePeriodNs) {
+  const refreshRate = framePeriodToFps(framePeriodNs);
+  if (!framePeriodNs || timestamps.length < 2) return refreshRate;
+  let intervals = 0;
+  let slots = 0;
+  for (let i = 1; i < timestamps.length; i++) {
+    const delta = timestamps[i] - timestamps[i - 1];
+    if (!Number.isFinite(delta) || delta <= 0) continue;
+    intervals += 1;
+    slots += Math.max(1, Math.round(delta / framePeriodNs));
+  }
+  return slots > 0 ? refreshRate * intervals / slots : refreshRate;
+}
+
+function getTargetFrameNs(rows) {
+  const values = rows.map(row => row.frameInterval).filter(value => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+  if (!values.length) return null;
+  return values[Math.floor(values.length / 2)];
+}
+
+function parseFramePeriod(text) {
+  const first = String(text || '').split(/\r?\n/).map(line => line.trim()).find(Boolean);
+  const value = Number(first);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function framePeriodToFps(framePeriodNs) {
+  return framePeriodNs ? roundFps(1e9 / framePeriodNs) : null;
+}
+
+function roundFps(value) {
+  if (!Number.isFinite(value)) return null;
+  return Number(Math.max(0, Math.min(240, value)).toFixed(1));
+}
+
+function smoothFpsValue(key, rawFps, targetFps, state) {
+  const target = Number.isFinite(targetFps) ? targetFps : null;
+  const raw = Number.isFinite(rawFps) ? (target ? Math.min(rawFps, target) : rawFps) : target;
+  if (!Number.isFinite(raw)) return null;
+  if (state !== 'active') {
+    fpsDisplayByMetric.set(key, { value: raw, lowCount: 0 });
+    return raw;
+  }
+  const previous = fpsDisplayByMetric.get(key);
+  const previousValue = typeof previous === 'object' ? previous.value : previous;
+  const base = Number.isFinite(previousValue) ? previousValue : (target || raw);
+  const alpha = raw < base ? 0.55 : 0.7;
+  const next = base + (raw - base) * alpha;
+  const maxStep = target ? Math.max(3, target * 0.18) : 20;
+  const limited = Math.max(base - maxStep, Math.min(base + maxStep, next));
+  const clamped = target ? Math.min(target, limited) : limited;
+  fpsDisplayByMetric.set(key, { value: clamped, lowCount: 0 });
+  return clamped;
+}
+
+function normalizeActivityName(packageName, activityName) {
+  const value = String(activityName || '');
+  return value.startsWith('.') ? `${packageName}${value}` : value;
+}
+
+function clearDeviceFpsState(deviceId) {
+  const prefix = `${deviceId}:`;
+  [gfxFrameStatsByDevice, surfaceFrameStatsByDevice, fpsDisplayByMetric].forEach(map => {
+    Array.from(map.keys()).forEach(key => {
+      if (key.startsWith(prefix)) map.delete(key);
+    });
+  });
+  surfaceLayerCacheByDevice.delete(deviceId);
+}
+// $XBH_AI_PATCH_END
+
 function buildWarnings(snapshot, thresholds) {
   const warnings = [];
   if (snapshot.cpu.usage != null && snapshot.cpu.usage >= thresholds.cpu) warnings.push({ type: 'cpu', label: `CPU ${snapshot.cpu.usage}%` });
@@ -298,6 +635,10 @@ function stopMonitor(deviceId) {
   monitor.running = false;
   if (monitor.timer) clearInterval(monitor.timer);
   monitors.delete(deviceId);
+  // $XBH_AI_PATCH_START
+  // 停止监控时清理该设备的 FPS 差值状态，避免下次启动使用过期采样点。
+  clearDeviceFpsState(deviceId);
+  // $XBH_AI_PATCH_END
   return true;
 }
 
@@ -305,10 +646,11 @@ function cleanup() {
   Array.from(monitors.keys()).forEach(stopMonitor);
 }
 
-function runAdb(args) {
+function runAdb(args, timeoutMs = COMMAND_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const adbCommand = fs.existsSync(BUNDLED_ADB_PATH) ? BUNDLED_ADB_PATH : 'adb';
-    const proc = execFile(adbCommand, args, { windowsHide: true, timeout: COMMAND_TIMEOUT_MS }, (error, stdout, stderr) => {
+    const adbArgs = Array.isArray(args) ? args : [];
+    const proc = execFile(adbCommand, adbArgs, { windowsHide: true, timeout: timeoutMs }, (error, stdout, stderr) => {
       if (error) {
         resolve({ ok: false, stdout: stdout || '', stderr: stderr || '', error: stderr || error.message });
       } else {

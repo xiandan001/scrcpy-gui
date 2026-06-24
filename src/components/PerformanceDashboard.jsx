@@ -8,7 +8,12 @@ const METRICS = [
   { key: 'cpu', label: 'CPU', color: '#22c55e' },
   { key: 'memory', label: '内存', color: '#38bdf8' },
   { key: 'data', label: '/data', color: '#f59e0b' },
-  { key: 'temp', label: '温度', color: '#ef4444' }
+  { key: 'temp', label: '温度', color: '#ef4444' },
+  // $XBH_AI_PATCH_START
+  // FPS 趋势：前台应用渲染帧率与 SurfaceFlinger 合成帧率。
+  { key: 'foregroundFps', label: '前台FPS', color: '#a78bfa', max: 120 },
+  { key: 'surfaceFps', label: '合成FPS', color: '#14b8a6', max: 120 }
+  // $XBH_AI_PATCH_END
 ];
 
 function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemberCenter }) {
@@ -18,7 +23,10 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
   const onlineDevices = useMemo(() => devices.filter(device => device.status === 'device'), [devices]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [running, setRunning] = useState(false);
-  const [intervalMs, setIntervalMs] = useState(5000);
+  // $XBH_AI_PATCH_START
+  // 默认 3 秒采样，让面板数值变化更及时。
+  const [intervalMs, setIntervalMs] = useState(3000);
+  // $XBH_AI_PATCH_END
   const [snapshot, setSnapshot] = useState(null);
   const [history, setHistory] = useState([]);
   const [thresholds, setThresholds] = useState({ cpu: 85, memory: 85, batteryTemp: 45, dataUsed: 90 });
@@ -35,10 +43,19 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
     cpu: item.cpu?.usage,
     memory: item.memory?.usage,
     data: getDataDisk(item)?.usage,
-    temp: getDeviceTemperature(item)
+    temp: getDeviceTemperature(item),
+    // $XBH_AI_PATCH_START
+    foregroundFps: item.fps?.foreground?.fps,
+    surfaceFps: item.fps?.surfaceFlinger?.fps
+    // $XBH_AI_PATCH_END
   })), [history]);
   const dataDisk = getDataDisk(snapshot);
   const deviceTemperature = getDeviceTemperature(snapshot);
+  // $XBH_AI_PATCH_START
+  // 当前 FPS 指标快照。
+  const foregroundFps = snapshot?.fps?.foreground;
+  const surfaceFlingerFps = snapshot?.fps?.surfaceFlinger;
+  // $XBH_AI_PATCH_END
 
   useEffect(() => {
     if (!selectedDeviceId && onlineDevices.length > 0) setSelectedDeviceId(onlineDevices[0].id);
@@ -264,11 +281,16 @@ function PerformanceDashboard({ devices, theme, vipStatus, showToast, onOpenMemb
         </div>
       ) : (
         <>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             <MetricCard icon={<Cpu size={20} />} label="CPU" value={formatPercent(snapshot?.cpu?.usage)} sub={running ? '实时' : '最近采样'} color="emerald" theme={t} />
             <MetricCard icon={<Activity size={20} />} label="内存" value={formatPercent(snapshot?.memory?.usage)} sub={formatKb(snapshot?.memory?.usedKb, snapshot?.memory?.totalKb)} color="sky" theme={t} />
             <MetricCard icon={<Database size={20} />} label="/data" value={formatPercent(dataDisk?.usage)} sub={formatKb(dataDisk?.usedKb, dataDisk?.sizeKb)} color="amber" theme={t} />
             <MetricCard icon={<Thermometer size={20} />} label="温度" value={formatTemp(deviceTemperature)} sub={formatBatterySub(snapshot?.battery)} color="red" theme={t} />
+            {/* $XBH_AI_PATCH_START */}
+            {/* 展示前台应用 FPS 与当前屏幕 SurfaceFlinger 合成 FPS。 */}
+            <MetricCard icon={<Gauge size={20} />} label="前台 FPS" value={formatFps(foregroundFps?.fps)} sub={formatForegroundFpsSub(foregroundFps)} color="violet" theme={t} />
+            <MetricCard icon={<Zap size={20} />} label="合成 FPS" value={formatFps(surfaceFlingerFps?.fps)} sub={formatSurfaceFpsSub(surfaceFlingerFps)} color="cyan" theme={t} />
+            {/* $XBH_AI_PATCH_END */}
           </div>
 
           {snapshot?.warnings?.length > 0 && (
@@ -356,7 +378,11 @@ function MetricCard({ icon, label, value, sub, color, theme }) {
     emerald: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
     sky: 'text-sky-400 bg-sky-500/10 border-sky-500/20',
     amber: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
-    red: 'text-red-400 bg-red-500/10 border-red-500/20'
+    red: 'text-red-400 bg-red-500/10 border-red-500/20',
+    // $XBH_AI_PATCH_START
+    violet: 'text-violet-400 bg-violet-500/10 border-violet-500/20',
+    cyan: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20'
+    // $XBH_AI_PATCH_END
   }[color];
   return (
     <div className={`p-5 rounded-xl border shadow-sm ${isDark ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
@@ -365,7 +391,7 @@ function MetricCard({ icon, label, value, sub, color, theme }) {
         <span className={`text-xs ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>{label}</span>
       </div>
       <div className={`text-3xl font-bold mt-4 ${isDark ? 'text-[#E8EAED]' : 'text-slate-800'}`}>{value}</div>
-      <div className={`text-xs mt-1 ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>{sub}</div>
+      <div title={sub} className={`text-xs mt-1 truncate ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>{sub}</div>
     </div>
   );
 }
@@ -373,20 +399,41 @@ function MetricCard({ icon, label, value, sub, color, theme }) {
 function PerformanceChart({ points, isDark }) {
   const width = 720;
   const height = 260;
-  const pad = 28;
+  const pad = 42;
+  // $XBH_AI_PATCH_START
+  // FPS 最高按 120 归一化，避免 60/90/120Hz 设备曲线被错误压扁或截断。
+  const chartMax = Math.max(100, ...METRICS.map(metric => metric.max || 100));
+  // $XBH_AI_PATCH_END
   const series = METRICS.map(metric => ({
     ...metric,
-    path: makePath(points.map(item => item[metric.key]), width, height, pad)
+    path: makePath(points.map(item => item[metric.key]), width, height, pad, chartMax)
   }));
+  const yTicks = [0, 30, 60, 90, 120].filter(value => value <= chartMax);
+  const xTickIndexes = uniqueIndexes([0, Math.floor((points.length - 1) / 2), points.length - 1], points.length);
   return (
     <div className={`h-[300px] rounded-lg border ${isDark ? 'bg-[#202124] border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
       {points.length < 2 ? (
         <div className={`h-full flex items-center justify-center text-sm ${isDark ? 'text-[#80868B]' : 'text-slate-400'}`}>暂无趋势数据</div>
       ) : (
         <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full">
-          {[0, 25, 50, 75, 100].map(value => {
-            const y = pad + (100 - value) / 100 * (height - pad * 2);
-            return <line key={value} x1={pad} x2={width - pad} y1={y} y2={y} stroke={isDark ? '#334155' : '#e2e8f0'} strokeDasharray="4 6" />;
+          <line x1={pad} x2={pad} y1={pad} y2={height - pad} stroke={isDark ? '#475569' : '#cbd5e1'} />
+          <line x1={pad} x2={width - pad} y1={height - pad} y2={height - pad} stroke={isDark ? '#475569' : '#cbd5e1'} />
+          {yTicks.map(value => {
+            const y = pad + (chartMax - value) / chartMax * (height - pad * 2);
+            return (
+              <g key={value}>
+                <line x1={pad} x2={width - pad} y1={y} y2={y} stroke={isDark ? '#334155' : '#e2e8f0'} strokeDasharray="4 6" />
+                <text x={pad - 8} y={y + 4} textAnchor="end" fontSize="11" fill={isDark ? '#94a3b8' : '#64748b'}>{value}</text>
+              </g>
+            );
+          })}
+          {xTickIndexes.map(index => {
+            const x = pad + (index / Math.max(points.length - 1, 1)) * (width - pad * 2);
+            return (
+              <text key={index} x={x} y={height - 12} textAnchor={index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'} fontSize="11" fill={isDark ? '#94a3b8' : '#64748b'}>
+                {formatChartTime(points[index]?.timestamp)}
+              </text>
+            );
           })}
           {series.map(item => <path key={item.key} d={item.path} fill="none" stroke={item.color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />)}
         </svg>
@@ -407,16 +454,27 @@ function ThresholdInput({ label, value, suffix, onChange, isDark }) {
   );
 }
 
-function makePath(values, width, height, pad) {
+function makePath(values, width, height, pad, maxValue = 100) {
   const usableW = width - pad * 2;
   const usableH = height - pad * 2;
-  const clean = values.map(value => Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null);
+  const clean = values.map(value => Number.isFinite(value) ? Math.max(0, Math.min(maxValue, value)) : null);
   if (clean.filter(value => value != null).length < 2) return '';
   return clean.map((value, index) => {
     const x = pad + (index / Math.max(clean.length - 1, 1)) * usableW;
-    const y = pad + (100 - (value ?? 0)) / 100 * usableH;
+    const y = pad + (maxValue - (value ?? 0)) / maxValue * usableH;
     return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
   }).join(' ');
+}
+
+function uniqueIndexes(indexes, length) {
+  return Array.from(new Set(indexes.filter(index => Number.isInteger(index) && index >= 0 && index < length)));
+}
+
+function formatChartTime(timestamp) {
+  if (!timestamp) return '--:--:--';
+  const date = new Date(timestamp);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function formatPercent(value) {
@@ -426,6 +484,28 @@ function formatPercent(value) {
 function formatTemp(value) {
   return value == null ? '--' : `${Number(value).toFixed(1)}°C`;
 }
+
+// $XBH_AI_PATCH_START
+// FPS 展示格式与辅助说明。
+function formatFps(value) {
+  return value == null ? '--' : `${Number(value).toFixed(1)} FPS`;
+}
+
+function formatForegroundFpsSub(fps) {
+  if (!fps) return '前台应用 -';
+  if (fps.packageName) return fps.packageName;
+  if (fps.error) return '前台应用不可用';
+  return '等待前台应用';
+}
+
+function formatSurfaceFpsSub(fps) {
+  if (!fps) return 'SurfaceFlinger -';
+  if (fps.layer) return `刷新率 ${formatFps(fps.refreshRate)}`;
+  if (fps.refreshRate != null) return `刷新率 ${formatFps(fps.refreshRate)}`;
+  if (fps.error) return '合成数据不可用';
+  return '等待合成数据';
+}
+// $XBH_AI_PATCH_END
 
 function formatKb(used, total) {
   if (!used || !total) return '-';
