@@ -214,6 +214,16 @@ const CHANGELOGS = {
       { type: 'improve', text: '优化用户体验' },
       { type: 'fix', text: '修复部分错误' }
     ]
+  },
+  // v3.5.2 发版更新说明：同步性能监控体验优化，保留泛化措辞。
+  '3.5.2': {
+    title: 'v3.5.2',
+    date: '2026-06-24',
+    items: [
+      { type: 'improve', text: '优化性能监控体验' },
+      { type: 'improve', text: '优化应用性能' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
   }
   // $XBH_AI_PATCH_END
 };
