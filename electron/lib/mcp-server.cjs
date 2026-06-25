@@ -340,25 +340,11 @@ async function callMcpTool(name, args) {
 
     const rl = readline.createInterface({ input: p.stdout });
     rl.on('line', (line) => {
+      if (logAnalyzer.getLogcatProc() !== p) return;
       const entry = parseLogLine('realtime', line);
       const pkg = resolvePkg(entry.pid);
       if (pkg) entry.pkg = pkg;
-      logStore.realtime.push(entry);
-      // 按字节限制 + 条数上限双重保护（与 IPC adb:startLog 保持一致）
-      const logStoreBytes = logAnalyzer.getLogStoreBytes();
-      const LOG_STORE_BYTES_LIMIT = logAnalyzer.getLogStoreBytesLimit();
-      const entryBytes = Buffer.byteLength(entry.raw || '', 'utf8');
-      logStoreBytes.realtime += entryBytes;
-      if (logStore.realtime.length > 200000) {
-        const removed = logStore.realtime.splice(0, logStore.realtime.length - 200000);
-        for (const r of removed) {
-          logStoreBytes.realtime -= Buffer.byteLength(r.raw || '', 'utf8');
-        }
-      }
-      while (logStoreBytes.realtime > LOG_STORE_BYTES_LIMIT && logStore.realtime.length > 0) {
-        const removed = logStore.realtime.shift();
-        logStoreBytes.realtime -= Buffer.byteLength(removed.raw || '', 'utf8');
-      }
+      logAnalyzer.appendRealtimeEntry(entry);
       // 批量发送：累积日志条目，每 100ms 或满 50 条时批量发送（减少 IPC 调用）
       pushLogToBatch(entry);
     });

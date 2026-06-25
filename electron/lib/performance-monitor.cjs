@@ -14,6 +14,7 @@ const BUNDLED_ADB_PATH = path.join(__dirname, '../../scrcpy-win64/adb.exe');
 // 默认 3 秒采样，减少性能面板数值延后感；1 秒高频仍由会员权限控制。
 const DEFAULT_INTERVAL_MS = 3000;
 const VIP_MIN_INTERVAL_MS = 1000;
+const FREE_MIN_INTERVAL_MS = 5000;
 const FREE_HISTORY_LIMIT = 60;
 const VIP_HISTORY_LIMIT = 720;
 const COMMAND_TIMEOUT_MS = 15000;
@@ -52,6 +53,10 @@ function register(ipcMain) {
     if (!deviceId) return { ok: false, error: 'device_required' };
     const status = await vip.getStatusAsync();
     const isVip = status.activated === true;
+    const requestedIntervalMs = Number(args?.intervalMs) || DEFAULT_INTERVAL_MS;
+    if (!isVip && requestedIntervalMs < FREE_MIN_INTERVAL_MS) {
+      return { ok: false, code: 'vip_required', error: '3 秒及更高频性能采样为会员专属功能，请先开通会员' };
+    }
     const intervalMs = normalizeInterval(args?.intervalMs, isVip);
     await stopMonitor(deviceId);
     const monitor = {
@@ -1121,7 +1126,7 @@ function getThresholdPath() {
 
 function normalizeInterval(value, isVip) {
   const requested = Number(value) || DEFAULT_INTERVAL_MS;
-  const min = isVip ? VIP_MIN_INTERVAL_MS : DEFAULT_INTERVAL_MS;
+  const min = isVip ? VIP_MIN_INTERVAL_MS : FREE_MIN_INTERVAL_MS;
   return Math.max(min, Math.min(60000, requested));
 }
 

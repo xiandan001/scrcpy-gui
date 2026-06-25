@@ -24,7 +24,9 @@ const INTERVAL_OPTIONS = [
 function PerformanceDashboard({ devices, theme, vipStatus, performancePath, showToast, onOpenMemberCenter, onRefreshVipStatus }) {
   const t = theme;
   const isDark = t.primary === 'tech';
-  const isVip = vipStatus?.activated === true || vipStatus?.reason === 'loading';
+  const hasVipAccess = vipStatus?.activated === true;
+  const isVipLoading = vipStatus?.reason === 'loading';
+  const isVip = hasVipAccess || isVipLoading;
   const onlineDevices = useMemo(() => devices.filter(device => device.status === 'device'), [devices]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [running, setRunning] = useState(false);
@@ -207,13 +209,22 @@ function PerformanceDashboard({ devices, theme, vipStatus, performancePath, show
   const startMonitor = async () => {
     const targetDeviceId = selectedDeviceId;
     if (!targetDeviceId) return;
+    if (intervalMs < 5000 && !hasVipAccess) {
+      if (isVipLoading) {
+        showToast?.('正在加载会员状态，请稍后再试');
+        onRefreshVipStatus?.();
+      } else {
+        requireVip('高频采样');
+      }
+      return;
+    }
     stateRequestSeqRef.current += 1;
     setLoading(true);
     try {
       const res = await window.electronAPI.perfStart({
         deviceId: targetDeviceId,
         intervalMs,
-        includeProcesses: isVip
+        includeProcesses: hasVipAccess
       });
       if (res.ok) {
         flushSync(() => {
