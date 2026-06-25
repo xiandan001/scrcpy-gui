@@ -1,20 +1,14 @@
-// Task center: replay scripts, multi-device task queue, and execution history.
+// Task center worker: executes replay and stress tasks away from the Electron main thread.
 
-const { app } = require('electron');
-const { Worker } = require('worker_threads');
+const { parentPort, workerData } = require('worker_threads');
 const { execFile } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-const ctx = require('./app-context.cjs');
-const vip = require('./vip.cjs');
-const inspection = require('./inspection.cjs');
-const performanceMonitor = require('./performance-monitor.cjs');
-const aiAnalyze = require('./ai-analyze.cjs');
-
-const BUNDLED_ADB_PATH = path.join(__dirname, '../../scrcpy-win64/adb.exe');
+let adbPath = workerData?.adbPath || 'adb';
+const defaultArtifactBaseDir = workerData?.defaultArtifactBaseDir || '';
 const SCRIPTS_FILE = 'task-center-scripts.json';
 const HISTORY_FILE = 'task-center-history.json';
 const SETTINGS_FILE = 'settings.json';
@@ -23,7 +17,6 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const LONG_TIMEOUT_MS = 120000;
 const MAX_HISTORY = 100;
 const MAX_OUTPUT_CHARS = 12000;
-const MAX_SCREENSHOT_BYTES = 20 * 1024 * 1024;
 const MAX_STRESS_ROUNDS = 1000;
 const MAX_STRESS_STEP_RECORDS = 600;
 const MAX_STRESS_FAILURES = 120;
@@ -32,12 +25,8 @@ const STRESS_REPORT_FILE = 'stress-report.md';
 const STRESS_RESULT_FILE = 'stress-result.json';
 
 const activeTasks = new Map();
-const bridgeInspectionTasks = new Map();
 let scriptsCache = null;
 let historyCache = null;
-let taskWorker = null;
-let taskWorkerFailed = false;
-let workerBroadcastTimer = null;
 
 const DEFAULT_SCRIPT = {
   id: 'default-smoke-test',
@@ -53,427 +42,112 @@ const DEFAULT_SCRIPT = {
   updatedAt: 'builtin'
 };
 
-function register(ipcMain) {
-  ipcMain.handle('task-center:scripts:list', async () => {
-    return { ok: true, scripts: readScripts() };
-  });
+const bridgeRequests = new Map();
+const taskUpdateTimers = new Map();
+let bridgeRequestSeq = 0;
 
-  ipcMain.handle('task-center:scripts:save', async (event, args) => {
-    try {
-      const script = normalizeScript(args?.script);
-      const scripts = readScripts();
-      const now = new Date().toISOString();
-      const existing = scripts.find(item => item.id === script.id);
-      const nextScript = {
-        ...script,
-        createdAt: existing?.createdAt || now,
-        updatedAt: now
-      };
-      const next = existing
-        ? scripts.map(item => item.id === nextScript.id ? nextScript : item)
-        : [nextScript, ...scripts];
-      writeScripts(next);
-      return { ok: true, script: nextScript, scripts: next };
-    } catch (error) {
-      return { ok: false, error: error.message };
-    }
+parentPort.on('message', (message) => {
+  if (message?.type === 'bridge:response') {
+    handleBridgeResponse(message);
+    return;
+  }
+  handleWorkerMessage(message).catch(error => {
+    parentPort.postMessage({ type: 'workerError', error: error.message || '任务 Worker 异常' });
   });
+});
 
-  ipcMain.handle('task-center:scripts:delete', async (event, args) => {
-    const id = String(args?.id || '').trim();
-    if (!id) return { ok: false, error: 'script_id_required' };
-    const next = readScripts().filter(item => item.id !== id);
-    writeScripts(next);
-    return { ok: true, scripts: next };
-  });
-
-  ipcMain.handle('task-center:stress:import', async (event, args) => {
-    try {
-      const script = importStressScript(args?.filePath);
-      const scripts = readScripts();
-      const now = new Date().toISOString();
-      const nextScript = {
-        ...script,
-        id: `stress-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        createdAt: now,
-        updatedAt: now
-      };
-      const next = [nextScript, ...scripts];
-      writeScripts(next);
-      return { ok: true, script: nextScript, scripts: next };
-    } catch (error) {
-      return { ok: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('task-center:stress:export', async (event, args) => {
-    try {
-      const filePath = String(args?.filePath || '').trim();
-      if (!filePath) return { ok: false, error: 'file_required' };
-      const script = normalizeScript({ ...(args?.script || {}), mode: 'stress' });
-      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.promises.writeFile(filePath, JSON.stringify(toStressExportScript(script), null, 2), 'utf8');
-      return { ok: true, filePath };
-    } catch (error) {
-      return { ok: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('task-center:stress:uiSnapshot', async (event, args) => {
-    try {
-      const deviceId = normalizeDeviceId(args?.deviceId);
-      if (!deviceId) return { ok: false, error: 'device_required' };
-      const snapshot = await captureUiSnapshot(createRecorderTask(event.sender), deviceId, args?.timeoutMs || DEFAULT_TIMEOUT_MS);
-      if (snapshot.error) return { ok: false, error: snapshot.error, nodes: snapshot.nodes || [] };
-      return { ok: true, ...snapshot };
-    } catch (error) {
-      return { ok: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('task-center:stress:recordAction', async (event, args) => {
-    try {
-      const deviceId = normalizeDeviceId(args?.deviceId);
-      if (!deviceId) return { ok: false, error: 'device_required' };
-      const result = await recordStressAction(createRecorderTask(event.sender), deviceId, args || {});
-      return { ok: result.ok, ...result };
-    } catch (error) {
-      return { ok: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('task-center:run', async (event, args) => {
-    try {
-      const devices = normalizeDeviceIds(args?.deviceIds);
-      if (devices.length === 0) return { ok: false, error: '请至少选择一台在线设备' };
-      const script = args?.scriptId ? readScripts().find(item => item.id === args.scriptId) : normalizeScript(args?.script);
-      if (!script) return { ok: false, error: 'script_not_found' };
-      const task = createTask(script, devices, event.sender, args || {});
-      activeTasks.set(task.id, task);
-      broadcastState();
-      const started = startWorkerTask(task);
-      if (!started.ok) {
-        task.status = 'failed';
-        task.error = started.error || '任务 Worker 启动失败';
-        task.endedAt = new Date().toISOString();
-        await finishWorkerTask(publicTask(task));
-      }
-      return { ok: true, task: publicTask(task) };
-    } catch (error) {
-      return { ok: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('task-center:cancel', async (event, args) => {
-    const taskId = String(args?.taskId || '').trim();
+async function handleWorkerMessage(message) {
+  if (message?.adbPath) adbPath = message.adbPath;
+  if (message?.action === 'run') {
+    const task = prepareTaskForRun(message.task);
+    activeTasks.set(task.id, task);
+    sendTaskUpdate(task, true);
+    runTask(task).catch(async error => {
+      task.status = task.cancelled ? 'cancelled' : 'failed';
+      task.error = error.message || '任务执行失败';
+      task.endedAt = new Date().toISOString();
+      appendTaskLog(task, task.error);
+      await finishTask(task);
+    });
+    return;
+  }
+  if (message?.action === 'cancel') {
+    const taskId = String(message.taskId || '').trim();
     const task = activeTasks.get(taskId);
-    if (!task) return { ok: false, error: 'task_not_found' };
+    if (!task) return;
     task.cancelled = true;
     task.status = 'cancelled';
-    cancelBridgeInspectionTasks(taskId);
-    postTaskWorker({ action: 'cancel', taskId });
     killCurrentProcess(task);
-    broadcastTask(task);
-    return { ok: true, task: publicTask(task) };
-  });
-
-  ipcMain.handle('task-center:history', async () => {
-    return { ok: true, history: readHistory() };
-  });
-
-  ipcMain.handle('task-center:history:clear', async () => {
-    writeHistory([]);
-    broadcastState();
-    return { ok: true, history: [] };
-  });
-
-  ipcMain.handle('task-center:state', async () => {
-    return {
-      ok: true,
-      activeTasks: Array.from(activeTasks.values()).map(publicTask),
-      history: readHistory()
-    };
-  });
-}
-
-function startWorkerTask(task) {
-  const worker = ensureTaskWorker();
-  if (!worker) return { ok: false, error: 'worker_unavailable' };
-  postTaskWorker({
-    action: 'run',
-    adbPath: getAdbCommand(),
-    task: toWorkerTask(task)
-  });
-  return { ok: true };
-}
-
-function ensureTaskWorker() {
-  if (taskWorker && !taskWorkerFailed) return taskWorker;
-  taskWorkerFailed = false;
-  try {
-    taskWorker = new Worker(getTaskCenterWorkerPath(), {
-      workerData: {
-        adbPath: getAdbCommand(),
-        defaultArtifactBaseDir: resolveTaskArtifactBaseDir('')
-      }
-    });
-  } catch (error) {
-    taskWorker = null;
-    taskWorkerFailed = true;
-    return null;
-  }
-  taskWorker.on('message', handleTaskWorkerMessage);
-  taskWorker.on('error', handleTaskWorkerFailure);
-  taskWorker.on('exit', (code) => {
-    const hadActiveTasks = activeTasks.size > 0;
-    taskWorker = null;
-    if (code !== 0 && hadActiveTasks) {
-      handleTaskWorkerFailure(new Error(`任务 Worker 已退出：${code}`));
-    }
-  });
-  return taskWorker;
-}
-
-function getTaskCenterWorkerPath() {
-  const workerPath = path.join(__dirname, 'task-center-worker.cjs');
-  if (!app.isPackaged) return workerPath;
-  const unpackedPath = workerPath.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
-  return fs.existsSync(unpackedPath) ? unpackedPath : workerPath;
-}
-
-function postTaskWorker(message) {
-  try {
-    const worker = message?.action === 'run' ? ensureTaskWorker() : taskWorker;
-    worker?.postMessage({ adbPath: getAdbCommand(), ...message });
-  } catch (error) {
-    handleTaskWorkerFailure(error);
-  }
-}
-
-function handleTaskWorkerMessage(message) {
-  if (message?.type === 'progress' && message.task) {
-    applyWorkerTaskUpdate(message.task);
-    scheduleWorkerBroadcast();
+    sendTaskUpdate(task, true);
     return;
   }
-  if (message?.type === 'state') {
-    scheduleWorkerBroadcast();
-    return;
-  }
-  if (message?.type === 'done' && message.task) {
-    finishWorkerTask(message.task).catch(error => {
-      console.error('Failed to finish task worker record:', error);
-    });
-    return;
-  }
-  if (message?.type === 'bridge:request') {
-    handleTaskWorkerBridge(message).catch(error => {
-      respondTaskWorkerBridge(message.id, false, null, error.message || 'bridge_failed');
-    });
-    return;
-  }
-  if (message?.type === 'workerError') {
-    handleTaskWorkerFailure(new Error(message.error || '任务 Worker 异常'));
+  if (message?.action === 'shutdown') {
+    cleanup();
   }
 }
 
-function applyWorkerTaskUpdate(snapshot) {
-  const taskId = String(snapshot?.id || '').trim();
-  if (!taskId) return null;
-  const task = activeTasks.get(taskId);
-  if (!task) {
-    activeTasks.set(taskId, { publicSnapshot: sanitizePublicTask(snapshot) });
-    return activeTasks.get(taskId);
-  }
-  task.publicSnapshot = sanitizePublicTask(snapshot);
-  task.status = snapshot.status || task.status;
-  task.error = snapshot.error || task.error;
-  task.startedAt = snapshot.startedAt || task.startedAt;
-  task.endedAt = snapshot.endedAt || task.endedAt;
+function prepareTaskForRun(source) {
+  const task = source && typeof source === 'object' ? source : {};
+  task.cancelled = task.cancelled === true;
+  task.currentProc = null;
+  task.procs = new Set();
+  task.timers = new Set();
+  task.logs = Array.isArray(task.logs) ? task.logs : [];
+  task.deviceRuns = Array.isArray(task.deviceRuns) ? task.deviceRuns : [];
   return task;
 }
 
-async function finishWorkerTask(snapshot) {
-  const taskId = String(snapshot?.id || '').trim();
-  if (!taskId) return;
-  const task = applyWorkerTaskUpdate(snapshot);
-  const record = sanitizePublicTask(task?.publicSnapshot || snapshot);
-  activeTasks.delete(taskId);
-  cancelBridgeInspectionTasks(taskId);
-  const history = [record, ...readHistory().filter(item => item.id !== taskId)].slice(0, MAX_HISTORY);
-  writeHistory(history);
-  flushWorkerBroadcast();
-  ctx.broadcastToAllWindows('task-center:update', {
-    task: record,
-    activeTasks: Array.from(activeTasks.values()).map(publicTask),
-    history: readHistory()
+function sendTaskUpdate(task, immediate = false) {
+  if (!task?.id) return;
+  if (immediate) {
+    clearTaskUpdateTimer(task.id);
+    parentPort.postMessage({ type: 'progress', task: publicTask(task) });
+    return;
+  }
+  if (taskUpdateTimers.has(task.id)) return;
+  const timer = setTimeout(() => {
+    taskUpdateTimers.delete(task.id);
+    if (activeTasks.has(task.id)) {
+      parentPort.postMessage({ type: 'progress', task: publicTask(task) });
+    }
+  }, 250);
+  timer.unref?.();
+  taskUpdateTimers.set(task.id, timer);
+}
+
+function clearTaskUpdateTimer(taskId) {
+  const timer = taskUpdateTimers.get(taskId);
+  if (!timer) return;
+  clearTimeout(timer);
+  taskUpdateTimers.delete(taskId);
+}
+
+function requestMain(action, payload = {}, timeoutMs = 120000) {
+  const id = `task-bridge-${++bridgeRequestSeq}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      bridgeRequests.delete(id);
+      resolve({ ok: false, error: 'bridge_timeout' });
+    }, timeoutMs);
+    timer.unref?.();
+    bridgeRequests.set(id, { resolve, timer });
+    try {
+      parentPort.postMessage({ type: 'bridge:request', id, action, payload });
+    } catch (error) {
+      clearTimeout(timer);
+      bridgeRequests.delete(id);
+      resolve({ ok: false, error: error.message || 'bridge_post_failed' });
+    }
   });
 }
 
-function scheduleWorkerBroadcast() {
-  if (workerBroadcastTimer) return;
-  workerBroadcastTimer = setTimeout(() => {
-    workerBroadcastTimer = null;
-    broadcastState();
-  }, 250);
-  workerBroadcastTimer.unref?.();
+function handleBridgeResponse(message) {
+  const pending = bridgeRequests.get(message.id);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  bridgeRequests.delete(message.id);
+  pending.resolve(message.ok ? { ok: true, result: message.result } : { ok: false, error: message.error || 'bridge_failed' });
 }
-
-function flushWorkerBroadcast() {
-  if (!workerBroadcastTimer) return;
-  clearTimeout(workerBroadcastTimer);
-  workerBroadcastTimer = null;
-}
-
-function handleTaskWorkerFailure(error) {
-  taskWorkerFailed = true;
-  if (taskWorker) {
-    try { taskWorker.terminate(); } catch {}
-    taskWorker = null;
-  }
-  const now = new Date().toISOString();
-  const failedRecords = [];
-  for (const [taskId, task] of activeTasks.entries()) {
-    const record = publicTask(task);
-    if (record.status === 'running' || record.status === 'queued') {
-      record.status = 'failed';
-      record.error = error.message || '任务 Worker 异常';
-      record.endedAt = now;
-    }
-    failedRecords.push(record);
-    cancelBridgeInspectionTasks(taskId);
-  }
-  activeTasks.clear();
-  if (failedRecords.length > 0) {
-    const existing = readHistory();
-    const next = [
-      ...failedRecords,
-      ...existing.filter(item => !failedRecords.some(record => record.id === item.id))
-    ].slice(0, MAX_HISTORY);
-    writeHistory(next);
-  }
-  flushWorkerBroadcast();
-  broadcastState();
-}
-
-async function handleTaskWorkerBridge(message) {
-  const action = String(message.action || '').trim();
-  const payload = message.payload || {};
-  let result;
-  if (action === 'perfSnapshot') {
-    result = await bridgePerformanceSnapshot(payload);
-  } else if (action === 'inspection') {
-    result = await bridgeInspection(payload);
-  } else if (action === 'aiSummary') {
-    result = await bridgeAiSummary(payload);
-  } else {
-    result = { ok: false, error: `unsupported_bridge_action:${action}` };
-  }
-  respondTaskWorkerBridge(message.id, true, result, '');
-}
-
-function respondTaskWorkerBridge(id, ok, result, error) {
-  if (!id || !taskWorker) return;
-  try {
-    taskWorker.postMessage({ type: 'bridge:response', id, ok, result, error });
-  } catch {}
-}
-
-async function bridgePerformanceSnapshot(payload) {
-  const deviceId = normalizeDeviceId(payload?.deviceId);
-  if (!deviceId) return { ok: false, error: 'device_required' };
-  const status = await vip.getStatusAsync();
-  try {
-    const snapshot = await performanceMonitor.collectSnapshot(deviceId, status.activated === true, { timeoutMs: payload?.timeoutMs || 12000 });
-    return { ok: true, snapshot };
-  } catch (error) {
-    return { ok: false, error: error.message || 'snapshot_failed' };
-  }
-}
-
-async function bridgeInspection(payload) {
-  const taskId = String(payload?.taskId || '').trim();
-  const deviceId = normalizeDeviceId(payload?.deviceId);
-  if (!taskId || !deviceId) return { ok: false, error: 'task_or_device_required' };
-  const status = await vip.getStatusAsync();
-  if (!status.activated) {
-    return { ok: false, error: '设备巡检为会员专属功能，请先开通会员', code: 'vip_required' };
-  }
-  const bridgeTask = createBridgeInspectionTask(taskId, deviceId);
-  addBridgeInspectionTask(taskId, bridgeTask);
-  try {
-    const step = payload?.step || {};
-    const result = await inspection.runInspection(bridgeTask, {
-      deviceId,
-      deviceLabel: deviceId,
-      includeBugreport: step.includeBugreport === true,
-      includeAiSummary: step.includeAiSummary === true,
-      outputBaseDir: payload?.outputBaseDir
-    });
-    return { ok: true, result };
-  } catch (error) {
-    return { ok: false, error: error.message || 'inspection_failed' };
-  } finally {
-    removeBridgeInspectionTask(taskId, bridgeTask);
-  }
-}
-
-async function bridgeAiSummary(payload) {
-  try {
-    const summary = await aiAnalyze.generateAiSummary(payload?.options || {});
-    return { ok: true, summary };
-  } catch (error) {
-    return { ok: false, error: error.message || 'ai_summary_failed' };
-  }
-}
-
-function createBridgeInspectionTask(parentTaskId, deviceId) {
-  return {
-    id: `${parentTaskId}-${sanitizeName(deviceId)}`,
-    parentTaskId,
-    deviceId,
-    sender: null,
-    cancelled: false,
-    currentProc: null
-  };
-}
-
-function addBridgeInspectionTask(taskId, bridgeTask) {
-  const tasks = bridgeInspectionTasks.get(taskId) || new Set();
-  tasks.add(bridgeTask);
-  bridgeInspectionTasks.set(taskId, tasks);
-}
-
-function removeBridgeInspectionTask(taskId, bridgeTask) {
-  const tasks = bridgeInspectionTasks.get(taskId);
-  if (!tasks) return;
-  tasks.delete(bridgeTask);
-  if (tasks.size === 0) bridgeInspectionTasks.delete(taskId);
-}
-
-function cancelBridgeInspectionTasks(taskId) {
-  const tasks = bridgeInspectionTasks.get(taskId);
-  if (!tasks) return;
-  for (const task of tasks) {
-    task.cancelled = true;
-    try { task.currentProc?.kill?.(); } catch {}
-    task.currentProc = null;
-  }
-}
-
-function toWorkerTask(task) {
-  return JSON.parse(JSON.stringify({
-    ...task,
-    sender: null,
-    currentProc: null,
-    publicSnapshot: undefined
-  }));
-}
-
-function sanitizePublicTask(task) {
-  return JSON.parse(JSON.stringify(task || {}));
-}
-
 async function runTask(task) {
   task.status = 'running';
   task.startedAt = new Date().toISOString();
@@ -818,8 +492,15 @@ async function compareScreenshot(task, deviceId, step) {
 
 async function capturePerformance(task, deviceId, step) {
   const artifactDir = await ensureTaskArtifactDir(task, 'performance');
-  const status = await vip.getStatusAsync();
-  const snapshot = await performanceMonitor.collectSnapshot(deviceId, status.activated === true);
+  const bridge = await requestMain('perfSnapshot', {
+    taskId: task.id,
+    deviceId,
+    timeoutMs: step.timeoutMs || DEFAULT_TIMEOUT_MS
+  }, step.timeoutMs || DEFAULT_TIMEOUT_MS + 5000);
+  if (!bridge.ok || !bridge.result?.ok) {
+    return { ok: false, error: bridge.error || bridge.result?.error || 'performance_snapshot_failed' };
+  }
+  const snapshot = bridge.result.snapshot;
   const filePath = path.join(artifactDir, `performance-${sanitizeName(deviceId)}-${formatStamp(new Date())}.json`);
   await fs.promises.writeFile(filePath, JSON.stringify({ deviceId, capturedAt: new Date().toISOString(), snapshot }, null, 2), 'utf8');
   const summary = [
@@ -898,19 +579,20 @@ async function assertText(task, deviceId, step) {
 }
 
 async function captureInspectionSummary(task, deviceId, step) {
-  const status = await vip.getStatusAsync();
-  if (!status.activated) {
-    return { ok: false, error: '设备巡检为会员专属功能，请先开通会员', code: 'vip_required' };
-  }
   const outputBaseDir = await ensureTaskArtifactDir(task, 'inspection');
-  const inspectionTask = createLinkedInspectionTask(task, deviceId);
-  const result = await inspection.runInspection(inspectionTask, {
+  const bridge = await requestMain('inspection', {
+    taskId: task.id,
     deviceId,
-    deviceLabel: deviceId,
-    includeBugreport: step.includeBugreport === true,
-    includeAiSummary: step.includeAiSummary === true,
+    step: {
+      includeBugreport: step.includeBugreport === true,
+      includeAiSummary: step.includeAiSummary === true
+    },
     outputBaseDir
-  });
+  }, step.timeoutMs || LONG_TIMEOUT_MS * 2);
+  if (!bridge.ok || !bridge.result?.ok) {
+    return { ok: false, error: bridge.error || bridge.result?.error || 'inspection_failed', code: bridge.result?.code };
+  }
+  const result = bridge.result.result || {};
   const findings = result.analysis?.findings || [];
   const output = [
     result.cancelled ? '巡检已取消，已生成部分结果' : result.ok ? '完整巡检已完成' : '巡检未完整完成',
@@ -985,25 +667,7 @@ async function captureUiSnapshot(task, deviceId, timeoutMs) {
     .map((node, index) => toPublicUiNode(node, index))
     .filter(node => node.label || node.resourceId || node.contentDesc)
     .slice(0, 300);
-  const screenshot = await captureRecorderScreenshot(task, deviceId, timeoutMs || DEFAULT_TIMEOUT_MS);
-  return { nodes, rawLength: raw.length, ...screenshot };
-}
-
-async function captureRecorderScreenshot(task, deviceId, timeoutMs) {
-  const res = await runAdbBuffer(task, ['-s', deviceId, 'exec-out', 'screencap', '-p'], timeoutMs || DEFAULT_TIMEOUT_MS);
-  if (!res.ok || !res.stdout?.length) {
-    return { screenshotDataUrl: '', screenshotWidth: 0, screenshotHeight: 0, screenshotError: res.error || 'screenshot_failed' };
-  }
-  const size = getPngSize(res.stdout);
-  if (!size) {
-    return { screenshotDataUrl: '', screenshotWidth: 0, screenshotHeight: 0, screenshotError: 'invalid_screenshot_png' };
-  }
-  return {
-    screenshotDataUrl: `data:image/png;base64,${res.stdout.toString('base64')}`,
-    screenshotWidth: size.width,
-    screenshotHeight: size.height,
-    screenshotError: ''
-  };
+  return { nodes, rawLength: raw.length };
 }
 
 async function recordStressAction(task, deviceId, args) {
@@ -1094,12 +758,6 @@ function toPublicUiNode(node, index) {
     xpath: node.xpath || '',
     packageName: attrs.package || '',
     bounds: attrs.bounds || '',
-    rect: {
-      left: node.bounds.left,
-      top: node.bounds.top,
-      right: node.bounds.right,
-      bottom: node.bounds.bottom
-    },
     x: center.x,
     y: center.y
   };
@@ -1458,41 +1116,8 @@ function paethPredictor(left, up, upLeft) {
   return pb <= pc ? up : upLeft;
 }
 
-function bufferToText(buffer) {
-  return Buffer.isBuffer(buffer) ? buffer.toString('utf8').trim() : String(buffer || '').trim();
-}
-
 function runAdb(task, args, timeoutMs = DEFAULT_TIMEOUT_MS) {
   return runProcess(task, getAdbCommand(), args, timeoutMs);
-}
-
-function runAdbBuffer(task, args, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return new Promise((resolve) => {
-    if (task.cancelled) {
-      resolve({ ok: false, error: '用户取消', stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
-      return;
-    }
-    const proc = execFile(getAdbCommand(), args, {
-      windowsHide: true,
-      timeout: timeoutMs,
-      maxBuffer: MAX_SCREENSHOT_BYTES,
-      encoding: 'buffer'
-    }, (error, stdout, stderr) => {
-      if (task.currentProc === proc) task.currentProc = null;
-      if (error) {
-        resolve({
-          ok: false,
-          stdout: stdout || Buffer.alloc(0),
-          stderr: stderr || Buffer.alloc(0),
-          error: bufferToText(stderr) || error.message
-        });
-      } else {
-        resolve({ ok: true, stdout: stdout || Buffer.alloc(0), stderr: stderr || Buffer.alloc(0) });
-      }
-    });
-    task.currentProc = proc;
-    proc.stdin?.end?.();
-  });
 }
 
 function runProcess(task, command, args, timeoutMs, cwd = undefined) {
@@ -1503,6 +1128,7 @@ function runProcess(task, command, args, timeoutMs, cwd = undefined) {
     }
     const proc = execFile(command, args, { windowsHide: true, timeout: timeoutMs, cwd }, (error, stdout, stderr) => {
       if (task.currentProc === proc) task.currentProc = null;
+      task.procs?.delete?.(proc);
       if (error) {
         resolve({ ok: false, stdout: stdout || '', stderr: stderr || '', output: trimOutput(`${stdout || ''}${stderr || ''}`), error: stderr || error.message });
       } else {
@@ -1510,6 +1136,7 @@ function runProcess(task, command, args, timeoutMs, cwd = undefined) {
       }
     });
     task.currentProc = proc;
+    task.procs?.add?.(proc);
     proc.stdin?.end?.();
   });
 }
@@ -1665,15 +1292,11 @@ async function finishTask(task) {
   }
   activeTasks.delete(task.id);
   const record = publicTask(task);
-  const history = [record, ...readHistory().filter(item => item.id !== task.id)].slice(0, MAX_HISTORY);
-  writeHistory(history);
-  broadcastTask(task);
-  broadcastState();
+  cleanupTaskResources(task);
+  parentPort.postMessage({ type: 'done', task: record });
 }
 
 function publicTask(task) {
-  if (task?.publicSnapshot) return sanitizePublicTask(task.publicSnapshot);
-  if (task && !task.script && task.scriptName) return sanitizePublicTask(task);
   return {
     id: task.id,
     mode: task.script?.mode || 'replay',
@@ -2074,12 +1697,18 @@ async function buildStressAiSummary(result) {
       failedRounds: device.failedRounds
     }))
   }, null, 2);
-  return aiAnalyze.generateAiSummary({
-    systemPrompt: prompt,
-    userContent: content,
-    timeoutMs: 60000,
-    temperature: 0.2
-  });
+  const bridge = await requestMain('aiSummary', {
+    options: {
+      systemPrompt: prompt,
+      userContent: content,
+      timeoutMs: 60000,
+      temperature: 0.2
+    }
+  }, 70000);
+  if (!bridge.ok || !bridge.result?.ok) {
+    return { ok: false, error: bridge.error || bridge.result?.error || 'ai_summary_failed' };
+  }
+  return bridge.result.summary || { ok: false, error: 'ai_summary_empty' };
 }
 
 function importStressScript(filePath) {
@@ -2275,8 +1904,7 @@ function rebaseTaskArtifactPaths(task, fromDir, toDir) {
 function resolveTaskArtifactBaseDir(outputBaseDir) {
   const explicit = String(outputBaseDir || '').trim();
   if (explicit) return path.resolve(explicit);
-  const configured = readTaskCenterPath();
-  return configured || path.join(app.getPath('userData'), ARTIFACT_DIR);
+  return defaultArtifactBaseDir || path.join(process.cwd(), ARTIFACT_DIR);
 }
 
 function readTaskCenterPath() {
@@ -2291,16 +1919,21 @@ function readTaskCenterPath() {
 }
 
 function getDataPath(fileName) {
-  return path.join(app.getPath('userData'), fileName);
+  return path.join(defaultArtifactBaseDir || process.cwd(), fileName);
 }
 
 function getAdbCommand() {
-  return fs.existsSync(BUNDLED_ADB_PATH) ? BUNDLED_ADB_PATH : 'adb';
+  return adbPath || 'adb';
 }
 
 function killCurrentProcess(task) {
-  if (!task.currentProc) return;
-  try { task.currentProc.kill(); } catch {}
+  if (task.procs) {
+    for (const proc of Array.from(task.procs)) {
+      try { proc?.kill?.(); } catch {}
+    }
+    task.procs.clear();
+  }
+  try { task.currentProc?.kill?.(); } catch {}
   task.currentProc = null;
 }
 
@@ -2310,27 +1943,16 @@ function appendTaskLog(task, message) {
 }
 
 function broadcastTask(task) {
-  ctx.broadcastToAllWindows('task-center:update', {
-    task: publicTask(task),
-    activeTasks: Array.from(activeTasks.values()).map(publicTask),
-    history: readHistory()
-  });
+  sendTaskUpdate(task);
 }
 
 function broadcastState() {
-  ctx.broadcastToAllWindows('task-center:update', {
-    activeTasks: Array.from(activeTasks.values()).map(publicTask),
-    history: readHistory()
-  });
+  parentPort.postMessage({ type: 'state', activeTasks: Array.from(activeTasks.values()).map(publicTask) });
 }
 
 function normalizeDeviceIds(value) {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.map(item => String(item || '').trim()).filter(Boolean)));
-}
-
-function normalizeDeviceId(value) {
-  return String(value || '').trim();
 }
 
 function getStepTypeLabel(type) {
@@ -2401,36 +2023,50 @@ function sleepWithCancel(task, durationMs) {
     }
     const timer = setTimeout(() => {
       clearInterval(check);
+      task.timers?.delete?.(timer);
+      task.timers?.delete?.(check);
       resolve();
     }, durationMs);
     const check = setInterval(() => {
       if (!task.cancelled) return;
       clearTimeout(timer);
       clearInterval(check);
+      task.timers?.delete?.(timer);
+      task.timers?.delete?.(check);
       reject(new Error('用户取消'));
     }, 200);
+    task.timers?.add?.(timer);
+    task.timers?.add?.(check);
     check.unref?.();
   });
 }
 
 function cleanup() {
-  if (workerBroadcastTimer) {
-    clearTimeout(workerBroadcastTimer);
-    workerBroadcastTimer = null;
-  }
   for (const task of activeTasks.values()) {
     task.cancelled = true;
     task.status = 'cancelled';
-    cancelBridgeInspectionTasks(task.id);
     killCurrentProcess(task);
+    cleanupTaskResources(task);
+    parentPort.postMessage({ type: 'done', task: publicTask(task) });
   }
   activeTasks.clear();
-  bridgeInspectionTasks.clear();
-  if (taskWorker) {
-    try { taskWorker.postMessage({ action: 'shutdown' }); } catch {}
-    try { taskWorker.terminate(); } catch {}
-    taskWorker = null;
-  }
+  bridgeRequests.forEach(pending => {
+    clearTimeout(pending.timer);
+    pending.resolve({ ok: false, error: 'worker_shutdown' });
+  });
+  bridgeRequests.clear();
+  for (const timer of taskUpdateTimers.values()) clearTimeout(timer);
+  taskUpdateTimers.clear();
 }
 
-module.exports = { register, cleanup };
+function cleanupTaskResources(task) {
+  clearTaskUpdateTimer(task.id);
+  if (task.timers) {
+    for (const timer of Array.from(task.timers)) {
+      clearTimeout(timer);
+      clearInterval(timer);
+    }
+    task.timers.clear();
+  }
+  killCurrentProcess(task);
+}

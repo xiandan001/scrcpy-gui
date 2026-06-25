@@ -231,6 +231,16 @@ const CHANGELOGS = {
       { type: 'fix', text: '修复部分错误' }
     ]
   },
+  '3.7.0': {
+    title: 'v3.7.0',
+    date: '2026-06-25',
+    items: [
+      { type: 'feature', text: '新增自动化压测：支持录制回放、截图比对和外部脚本步骤' },
+      { type: 'improve', text: '优化自动化压测：增强控件选择器、坐标回放和曲线滑动支持' },
+      { type: 'improve', text: '优化用户体验' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
+  },
   '3.6.2': {
     title: 'v3.6.2',
     date: '2026-06-24',

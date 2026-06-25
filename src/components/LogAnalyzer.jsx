@@ -1,11 +1,13 @@
 // H5: 导入 memo 用于 LogRow 性能优化
-import { useEffect, useMemo, useState, useDeferredValue, useRef, memo } from 'react';
+import { useCallback, useEffect, useMemo, useState, useDeferredValue, useRef, memo } from 'react';
 import { FolderOpen, Play, Square, Trash2, Download, Copy, RefreshCw, Terminal, Filter, BarChart3, HelpCircle, Radio, X, Sparkles, Loader2, Send, StopCircle, Maximize2, Minimize2, FileDown, AlertTriangle, Zap, ShieldCheck, Search, Brain, CheckCircle, Layers, ChevronDown, Smartphone, Lock } from 'lucide-react';
 import { filterEntries, countByLevel } from '../shared/filter';
 // 日志诊断规则库面板
 import DiagnosticRuleLibrary from './DiagnosticRuleLibrary';
 
 const emptyFilter = {};
+const LOG_ROW_HEIGHT = 28;
+const LOG_ROW_OVERSCAN = 30;
 
 const levels = [
   { v: 'V', label: 'V Verbose' },
@@ -123,7 +125,11 @@ export default function LogAnalyzer({ theme, vipStatus }) {
   const searchSessionRef = useRef(0);
   const logListenersRef = useRef([]);
   const deferredFilter = useDeferredValue(filter);
-  const logEndRef = useRef(null);
+  const logScrollRef = useRef(null);
+  const logViewportRafRef = useRef(null);
+  const logAutoScrollRafRef = useRef(null);
+  const pendingLogViewportRef = useRef(null);
+  const [logViewport, setLogViewport] = useState({ scrollTop: 0, height: 0 });
   // H7: onResizeStart 全局监听器泄漏修复 - 存储 mousemove/mouseup 监听器，组件卸载时清理
   const resizeListenersRef = useRef(null);
   // H6: 列宽拖拽 requestAnimationFrame 节流
@@ -257,12 +263,67 @@ export default function LogAnalyzer({ theme, vipStatus }) {
 
   const counts = useMemo(() => countByLevel(filtered), [filtered]);
 
-  useEffect(() => {
-    // L1: 仅在用户已处于底部时自动滚动，避免打断用户浏览；behavior 改为 'auto' 减少动画堆叠
-    if (autoScrollRef.current && logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'auto' });
+  const syncLogViewport = useCallback((scrollTop, height) => {
+    pendingLogViewportRef.current = { scrollTop, height };
+    if (logViewportRafRef.current != null) return;
+    logViewportRafRef.current = requestAnimationFrame(() => {
+      logViewportRafRef.current = null;
+      const next = pendingLogViewportRef.current;
+      if (!next) return;
+      setLogViewport((prev) => (
+        prev.scrollTop === next.scrollTop && prev.height === next.height ? prev : next
+      ));
+    });
+  }, []);
+
+  const virtualLogRows = useMemo(() => {
+    const total = filtered.length;
+    if (total === 0) {
+      return { entries: [], start: 0, topOffset: 0, totalHeight: 0 };
     }
-  }, [filtered.length]);
+    const viewportHeight = logViewport.height || 600;
+    const rawStart = Math.floor(logViewport.scrollTop / LOG_ROW_HEIGHT) - LOG_ROW_OVERSCAN;
+    const start = Math.min(Math.max(0, rawStart), Math.max(0, total - 1));
+    const visibleCount = Math.ceil(viewportHeight / LOG_ROW_HEIGHT) + LOG_ROW_OVERSCAN * 2;
+    const end = Math.min(total, start + visibleCount);
+    return {
+      entries: filtered.slice(start, end),
+      start,
+      topOffset: start * LOG_ROW_HEIGHT,
+      totalHeight: total * LOG_ROW_HEIGHT
+    };
+  }, [filtered, logViewport]);
+
+  useEffect(() => {
+    // L1: 仅在用户已处于底部时自动滚动，避免打断用户浏览；直接滚容器减少虚拟列表额外 DOM。
+    if (!autoScrollRef.current || !logScrollRef.current) return;
+    if (logAutoScrollRafRef.current != null) {
+      cancelAnimationFrame(logAutoScrollRafRef.current);
+    }
+    logAutoScrollRafRef.current = requestAnimationFrame(() => {
+      logAutoScrollRafRef.current = null;
+      const el = logScrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+      syncLogViewport(el.scrollTop, el.clientHeight);
+    });
+  }, [filtered.length, syncLogViewport]);
+
+  useEffect(() => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    const updateViewport = () => syncLogViewport(el.scrollTop, el.clientHeight);
+    updateViewport();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(updateViewport);
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', updateViewport);
+    return () => window.removeEventListener('resize', updateViewport);
+  }, [syncLogViewport]);
 
   useEffect(() => {
     async function refreshDevices() {
@@ -544,6 +605,15 @@ export default function LogAnalyzer({ theme, vipStatus }) {
       if (colResizeRafRef.current != null) {
         cancelAnimationFrame(colResizeRafRef.current);
         colResizeRafRef.current = null;
+      }
+      // 虚拟日志列表：清理 pending viewport raf
+      if (logViewportRafRef.current != null) {
+        cancelAnimationFrame(logViewportRafRef.current);
+        logViewportRafRef.current = null;
+      }
+      if (logAutoScrollRafRef.current != null) {
+        cancelAnimationFrame(logAutoScrollRafRef.current);
+        logAutoScrollRafRef.current = null;
       }
       // UX1: 清理 note 自动清除定时器
       if (noteTimerRef.current) {
@@ -1614,11 +1684,13 @@ export default function LogAnalyzer({ theme, vipStatus }) {
           </div>
 
           <div
+            ref={logScrollRef}
             className="flex-1 overflow-y-auto font-mono text-xs"
             // L1: 检测用户是否在底部，更新 autoScrollRef
             onScroll={(e) => {
               const el = e.currentTarget;
               autoScrollRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+              syncLogViewport(el.scrollTop, el.clientHeight);
             }}
           >
             {loading ? (
@@ -1647,17 +1719,21 @@ export default function LogAnalyzer({ theme, vipStatus }) {
                 <p className="text-xs mt-1">可点击"开始抓取"或"打开 .log"</p>
               </div>
             ) : (
-              <div className="divide-y divide-slate-800/30">
-                {filtered.map((entry) => (
-                  <LogRow
-                    key={entry.id}
-                    entry={entry}
-                    isDark={isDark}
-                    colWidths={colWidths}
-                    highlighted={smartSearchMatchedIds.has(entry.id)}
-                  />
-                ))}
-                <div ref={logEndRef} />
+              <div className="relative" style={{ height: `${virtualLogRows.totalHeight}px` }}>
+                <div
+                  className="divide-y divide-slate-800/30"
+                  style={{ transform: `translateY(${virtualLogRows.topOffset}px)` }}
+                >
+                  {virtualLogRows.entries.map((entry) => (
+                    <LogRow
+                      key={entry.id}
+                      entry={entry}
+                      isDark={isDark}
+                      colWidths={colWidths}
+                      highlighted={smartSearchMatchedIds.has(entry.id)}
+                    />
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -2199,7 +2275,7 @@ const LogRow = memo(function LogRow({ entry, isDark, colWidths, highlighted }) {
           ? (isDark ? 'bg-violet-500/10 border-violet-400' : 'bg-violet-50 border-violet-500')
           : (isDark ? 'hover:bg-white/5 border-b border-white/5 border-transparent' : 'hover:bg-slate-50 border-b border-slate-100 border-transparent')
       }`}
-      style={{ gridTemplateColumns: gridTemplate }}
+      style={{ gridTemplateColumns: gridTemplate, height: `${LOG_ROW_HEIGHT}px` }}
       onDoubleClick={() => navigator.clipboard.writeText(entry.raw)}
       title={entry.raw}
     >

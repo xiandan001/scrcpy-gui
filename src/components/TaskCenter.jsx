@@ -10,9 +10,11 @@ import {
   ChevronDown,
   Clock3,
   ClipboardList,
+  Download,
   FolderOpen,
   Gauge,
   Loader2,
+  Maximize2,
   Package,
   Play,
   Plus,
@@ -31,9 +33,17 @@ const STEP_TYPES = [
   { value: 'installApk', label: '安装 APK', description: '安装本地 APK 到设备', icon: Package },
   { value: 'pushFile', label: '推送文件', description: '推送本地文件到设备路径', icon: Upload },
   { value: 'screenshot', label: '截图', description: '保存当前设备画面', icon: Camera },
+  { value: 'imageCompare', label: '截图比对', description: '采集截图并与基准图做相似度验收', icon: Camera },
   { value: 'perfSnapshot', label: '性能采样', description: '采集一次性能快照', icon: Gauge },
+  { value: 'tap', label: '点击', description: '按坐标或控件选择器点击', icon: Smartphone },
+  { value: 'swipe', label: '滑动', description: '按坐标执行滑动手势', icon: Smartphone },
+  { value: 'input', label: '输入文本', description: '向当前焦点输入文本', icon: Terminal },
+  { value: 'keyevent', label: '按键', description: '发送 Android keyevent', icon: Terminal },
+  { value: 'waitText', label: '等待文本', description: '等待界面出现指定文本', icon: Search },
+  { value: 'assertText', label: '断言文本', description: '校验界面文本存在', icon: CheckCircle2 },
   { value: 'inspection', label: '巡检摘要', description: '生成巡检报告和证据包', icon: ClipboardList },
   { value: 'waitLog', label: '等待日志', description: '轮询直到日志命中', icon: Search },
+  { value: 'externalScript', label: '外部脚本', description: '调用 Appium、Maestro、UIAutomator2 或自定义命令', icon: Terminal },
   { value: 'delay', label: '等待', description: '等待指定毫秒数', icon: Clock3 }
 ];
 
@@ -49,6 +59,9 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [recorder, setRecorder] = useState(createRecorderState());
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
 
   const panelClass = isDark ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200';
   const softClass = isDark ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-slate-50 border-slate-200';
@@ -100,6 +113,28 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const activeCount = activeTasks.filter(task => task.status === 'running' || task.status === 'queued').length;
   const selectedScript = scripts.find(script => script.id === selectedScriptId);
 
+  const runConfirmDialog = async () => {
+    if (!confirmDialog?.onConfirm) return;
+    setConfirmLoading(true);
+    try {
+      const result = await confirmDialog.onConfirm();
+      if (result !== false) setConfirmDialog(null);
+    } catch (error) {
+      showToast?.(`操作失败：${error.message || '未知错误'}`);
+    } finally {
+      setConfirmLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (onlineDevices.length === 0) {
+      setRecorder(prev => prev.deviceId ? { ...prev, deviceId: '' } : prev);
+      return;
+    }
+    const preferred = selectedDeviceIds[0] || onlineDevices[0].id;
+    setRecorder(prev => onlineDevices.some(device => device.id === prev.deviceId) ? prev : { ...prev, deviceId: preferred });
+  }, [onlineDevices, selectedDeviceIds]);
+
   const selectScript = (script) => {
     setSelectedScriptId(script.id);
     setDraft(cloneScript(script));
@@ -129,18 +164,70 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   };
 
   const deleteScript = async () => {
-    if (!selectedScript || !window.confirm(`确定删除脚本「${selectedScript.name}」吗？`)) return;
-    const res = await window.electronAPI?.taskScriptDelete?.({ id: selectedScript.id });
-    if (!res?.ok) {
-      showToast?.(`删除失败：${res?.error || '未知错误'}`);
-      return;
+    if (!selectedScript) return;
+    const scriptToDelete = selectedScript;
+    setConfirmDialog({
+      title: '删除复现脚本',
+      message: `确定删除「${scriptToDelete.name}」吗？`,
+      detail: `脚本中的 ${scriptToDelete.steps?.length || 0} 个步骤会一并删除；已有运行历史和证据文件不会被清除。`,
+      confirmLabel: '删除脚本',
+      icon: Trash2,
+      onConfirm: async () => {
+        const res = await window.electronAPI?.taskScriptDelete?.({ id: scriptToDelete.id });
+        if (!res?.ok) {
+          showToast?.(`删除失败：${res?.error || '未知错误'}`);
+          return false;
+        }
+        const nextScripts = res.scripts || [];
+        setScripts(nextScripts);
+        const next = nextScripts[0] || createEmptyScript();
+        setSelectedScriptId(next.id);
+        setDraft(cloneScript(next));
+        showToast?.('脚本已删除');
+        return true;
+      }
+    });
+  };
+
+  const importStressScript = async () => {
+    const dialog = await window.electronAPI?.showOpenDialog?.({
+      title: '导入自动化压测脚本',
+      properties: ['openFile'],
+      filters: [
+        { name: '压测脚本', extensions: ['json', 'yaml', 'yml'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    });
+    const filePath = dialog?.filePaths?.[0];
+    if (!filePath) return;
+    const res = await window.electronAPI?.taskStressImport?.({ filePath });
+    if (res?.ok) {
+      setScripts(res.scripts || []);
+      setSelectedScriptId(res.script.id);
+      setDraft(cloneScript(res.script));
+      showToast?.('压测脚本已导入');
+    } else {
+      showToast?.(`导入失败：${res?.error || '未知错误'}`);
     }
-    const nextScripts = res.scripts || [];
-    setScripts(nextScripts);
-    const next = nextScripts[0] || createEmptyScript();
-    setSelectedScriptId(next.id);
-    setDraft(cloneScript(next));
-    showToast?.('脚本已删除');
+  };
+
+  const exportStressScript = async () => {
+    const dialog = await window.electronAPI?.showSaveDialog?.({
+      title: '导出自动化压测脚本',
+      defaultPath: `${draft.name || 'stress-script'}.json`,
+      filters: [
+        { name: 'JSON 压测脚本', extensions: ['json'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    });
+    const filePath = dialog?.filePath;
+    if (!filePath) return;
+    const res = await window.electronAPI?.taskStressExport?.({ script: draft, filePath });
+    if (res?.ok) {
+      showToast?.('压测脚本已导出');
+    } else {
+      showToast?.(`导出失败：${res?.error || '未知错误'}`);
+    }
   };
 
   const runScript = async () => {
@@ -156,10 +243,81 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
       concurrency: 1
     });
     if (res?.ok) {
-      showToast?.('任务已加入队列');
+      showToast?.(draft.mode === 'stress' ? '自动化压测已开始' : '任务已加入队列');
     } else {
       showToast?.(`启动失败：${res?.error || '未知错误'}`);
     }
+  };
+
+  const refreshRecorderSnapshot = async () => {
+    if (!recorder.deviceId) {
+      showToast?.('请选择录制设备');
+      return;
+    }
+    setRecorder(prev => ({ ...prev, loading: true, error: '' }));
+    try {
+      const res = await window.electronAPI?.taskStressUiSnapshot?.({ deviceId: recorder.deviceId });
+      if (res?.ok) {
+        setRecorder(prev => ({
+          ...prev,
+          nodes: res.nodes || [],
+          selectedNodeIndex: '',
+          screenshotDataUrl: res.screenshotDataUrl || '',
+          screenshotWidth: res.screenshotWidth || 0,
+          screenshotHeight: res.screenshotHeight || 0,
+          loading: false,
+          error: res.error || res.screenshotError || ''
+        }));
+        showToast?.(`已读取 ${res.nodes?.length || 0} 个界面控件`);
+      } else {
+        setRecorder(prev => ({ ...prev, loading: false, error: res?.error || '未知错误' }));
+        showToast?.(`读取界面失败：${res?.error || '未知错误'}`);
+      }
+    } catch (error) {
+      setRecorder(prev => ({ ...prev, loading: false, error: error.message || '未知错误' }));
+      showToast?.(`读取界面失败：${error.message || '未知错误'}`);
+    }
+  };
+
+  const appendRecordedStep = (step) => {
+    setDraft(prev => ({
+      ...prev,
+      mode: 'stress',
+      steps: [...(prev.steps || []), { ...step, id: `step-${Date.now()}-${Math.random().toString(16).slice(2)}` }]
+    }));
+  };
+
+  const recordAction = async (action, extra = {}) => {
+    if (!recorder.deviceId) {
+      showToast?.('请选择录制设备');
+      return;
+    }
+    const selectedNode = recorder.nodes.find(item => String(item.index) === String(recorder.selectedNodeIndex));
+    const node = Object.prototype.hasOwnProperty.call(extra, 'node') ? extra.node : selectedNode;
+    setRecorder(prev => ({ ...prev, recording: true, error: '' }));
+    try {
+      const res = await window.electronAPI?.taskStressRecordAction?.({
+        deviceId: recorder.deviceId,
+        action,
+        node,
+        ...extra
+      });
+      if (res?.ok && res.step) {
+        appendRecordedStep(res.step);
+        showToast?.('已执行并记录步骤');
+      } else {
+        showToast?.(`录制失败：${res?.error || '未知错误'}`);
+      }
+    } catch (error) {
+      showToast?.(`录制失败：${error.message || '未知错误'}`);
+    } finally {
+      setRecorder(prev => ({ ...prev, recording: false }));
+    }
+  };
+
+  const clearRecordedSteps = () => {
+    if (!window.confirm('确定清空当前脚本步骤吗？')) return;
+    setDraft(prev => ({ ...prev, steps: [] }));
   };
 
   const cancelTask = async (taskId) => {
@@ -168,12 +326,25 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   };
 
   const clearHistory = async () => {
-    if (!window.confirm('确定清空任务历史吗？')) return;
-    const res = await window.electronAPI?.taskHistoryClear?.();
-    if (res?.ok) {
-      setHistory([]);
-      showToast?.('任务历史已清空');
-    }
+    if (history.length === 0) return;
+    const historyCount = history.length;
+    setConfirmDialog({
+      title: '清空运行历史',
+      message: '确定清空全部运行历史吗？',
+      detail: `${historyCount} 条历史记录会从任务中心移除；已保存到磁盘的报告和证据目录不会被删除。`,
+      confirmLabel: '清空历史',
+      icon: AlertCircle,
+      onConfirm: async () => {
+        const res = await window.electronAPI?.taskHistoryClear?.();
+        if (!res?.ok) {
+          showToast?.(`清空失败：${res?.error || '未知错误'}`);
+          return false;
+        }
+        setHistory([]);
+        showToast?.('任务历史已清空');
+        return true;
+      }
+    });
   };
 
   const toggleDevice = (deviceId) => {
@@ -232,7 +403,7 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
             </h3>
             <p className={`text-sm mt-1 ${muted}`}>保存复现脚本，批量运行到多台设备，并沉淀执行证据。</p>
           </div>
-          <div className="grid grid-cols-3 gap-3 min-w-[360px]">
+          <div className="grid grid-cols-3 gap-3 w-full xl:w-auto xl:min-w-[420px]">
             <StatCard label="在线设备" value={onlineDevices.length} theme={t} />
             <StatCard label="运行任务" value={activeCount} theme={t} />
             <StatCard label="历史记录" value={history.length} theme={t} />
@@ -240,13 +411,18 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
         </div>
       </div>
 
-      <div className="grid gap-6 2xl:grid-cols-[280px_minmax(0,1fr)_420px]">
-        <section className={`rounded-xl border shadow-sm overflow-hidden ${panelClass}`}>
+      <div className="grid gap-5 xl:grid-cols-[240px_minmax(0,1fr)] min-[1920px]:grid-cols-[240px_minmax(760px,1fr)_340px] items-start">
+        <section className={`rounded-xl border shadow-sm overflow-hidden min-w-0 ${panelClass}`}>
           <div className={`px-4 py-3 border-b flex items-center justify-between ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
             <div className={`font-semibold ${text}`}>复现脚本</div>
-            <button onClick={createScript} className={`p-2 rounded-lg border ${t.button.secondary}`} title="新建脚本">
-              <Plus size={15} />
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={importStressScript} className={`p-2 rounded-lg border ${t.button.secondary}`} title="导入压测脚本">
+                <Upload size={15} />
+              </button>
+              <button onClick={createScript} className={`p-2 rounded-lg border ${t.button.secondary}`} title="新建脚本">
+                <Plus size={15} />
+              </button>
+            </div>
           </div>
           <div className="max-h-[720px] overflow-y-auto p-3 space-y-2">
             {scripts.length === 0 ? (
@@ -259,13 +435,13 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
               >
                 <div className={`font-medium truncate ${text}`}>{script.name}</div>
                 <div className={`text-xs mt-1 line-clamp-2 ${muted}`}>{script.description || '无描述'}</div>
-                <div className={`text-[11px] mt-2 ${muted}`}>{script.steps?.length || 0} 个步骤</div>
+                <div className={`text-[11px] mt-2 ${muted}`}>{script.mode === 'stress' ? '自动化压测' : '复现脚本'} · {script.steps?.length || 0} 个步骤</div>
               </button>
             ))}
           </div>
         </section>
 
-        <section className={`rounded-xl border shadow-sm ${panelClass}`}>
+        <section className={`rounded-xl border shadow-sm min-w-0 ${panelClass}`}>
           <div className={`px-5 py-4 border-b flex flex-wrap items-center gap-3 ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
             <div className="flex-1 min-w-[260px]">
               <input
@@ -290,10 +466,25 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
               />
               失败后继续执行
             </label>
+            <label className={`flex items-center gap-2 text-xs ${muted}`}>
+              <input
+                type="checkbox"
+                checked={draft.mode === 'stress'}
+                onChange={(e) => setDraft(prev => ({ ...prev, mode: e.target.checked ? 'stress' : 'replay' }))}
+                className="accent-emerald-500"
+              />
+              自动化压测
+            </label>
             <button onClick={saveScript} disabled={saving} className={`px-4 py-2 rounded-lg flex items-center gap-2 disabled:opacity-50 ${t.button.secondary}`}>
               {saving ? <RefreshCw size={15} className="animate-spin" /> : <Save size={15} />}
               保存
             </button>
+            {draft.mode === 'stress' && (
+              <button onClick={exportStressScript} className={`px-4 py-2 rounded-lg flex items-center gap-2 ${t.button.secondary}`}>
+                <Download size={15} />
+                导出
+              </button>
+            )}
             <button onClick={deleteScript} className="px-4 py-2 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 flex items-center gap-2">
               <Trash2 size={15} />
               删除
@@ -312,7 +503,7 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
                   <button onClick={() => setSelectedDeviceIds([])} className={`px-3 py-2 text-xs rounded-lg border ${t.button.secondary}`}>清空</button>
                   <button onClick={runScript} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium flex items-center gap-2">
                     <Play size={15} />
-                    运行
+                    {draft.mode === 'stress' ? '开始压测' : '运行'}
                   </button>
                 </div>
               </div>
@@ -334,6 +525,27 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
                 })}
               </div>
             </div>
+
+            {draft.mode === 'stress' && (
+              <>
+                <StressConfig
+                  script={draft}
+                  isDark={isDark}
+                  softClass={softClass}
+                  onChange={(patch) => setDraft(prev => ({ ...prev, ...patch }))}
+                />
+                <StressRecorder
+                  recorder={recorder}
+                  onlineDevices={onlineDevices}
+                  isDark={isDark}
+                  softClass={softClass}
+                  onChange={(patch) => setRecorder(prev => ({ ...prev, ...patch }))}
+                  onRefresh={refreshRecorderSnapshot}
+                  onRecord={recordAction}
+                  onClearSteps={clearRecordedSteps}
+                />
+              </>
+            )}
 
             <div className={`rounded-xl border overflow-hidden ${softClass}`}>
               <div className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3 ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
@@ -374,7 +586,7 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
           </div>
         </section>
 
-        <section className="space-y-6">
+        <section className="space-y-6 xl:col-span-2 min-[1920px]:col-span-1">
           <TaskList
             title="运行中"
             tasks={activeTasks}
@@ -393,8 +605,577 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
           />
         </section>
       </div>
+      <ConfirmDialog
+        dialog={confirmDialog}
+        theme={t}
+        loading={confirmLoading}
+        onCancel={() => setConfirmDialog(null)}
+        onConfirm={runConfirmDialog}
+      />
     </div>
   );
+}
+
+function ConfirmDialog({ dialog, theme, loading, onCancel, onConfirm }) {
+  useEffect(() => {
+    if (!dialog) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape' && !loading) onCancel();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [dialog, loading, onCancel]);
+
+  if (!dialog || typeof document === 'undefined') return null;
+
+  const isDark = theme.primary === 'tech';
+  const Icon = dialog.icon || AlertCircle;
+  const panelClass = isDark ? 'bg-[#202124] border-[#3E4145]' : 'bg-white border-slate-200';
+  const titleClass = isDark ? 'text-[#E8EAED]' : 'text-slate-900';
+  const textClass = isDark ? 'text-[#BDC1C6]' : 'text-slate-600';
+  const detailClass = isDark ? 'bg-[#2D2F33] border-[#3E4145] text-[#9AA0A6]' : 'bg-slate-50 border-slate-200 text-slate-500';
+  const cancelClass = isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-50';
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[140] flex items-center justify-center bg-black/55 px-4 py-6"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !loading) onCancel();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-confirm-title"
+        className={`w-full max-w-md rounded-xl border p-5 shadow-2xl ${panelClass}`}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-400">
+            <Icon size={22} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 id="task-confirm-title" className={`text-base font-semibold ${titleClass}`}>{dialog.title}</h3>
+            <p className={`mt-2 text-sm leading-6 ${textClass}`}>{dialog.message}</p>
+            {dialog.detail && (
+              <div className={`mt-3 rounded-lg border px-3 py-2 text-xs leading-5 ${detailClass}`}>
+                {dialog.detail}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            autoFocus
+            disabled={loading}
+            onClick={onCancel}
+            className={`px-4 py-2 text-sm rounded-lg border transition-colors disabled:opacity-60 ${cancelClass}`}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={onConfirm}
+            className="px-4 py-2 text-sm rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-70 flex items-center justify-center gap-2"
+          >
+            {loading && <Loader2 size={14} className="animate-spin" />}
+            {loading ? '处理中...' : dialog.confirmLabel || '确定'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function StressConfig({ script, isDark, softClass, onChange }) {
+  const loop = script.loop || {};
+  const acceptance = script.acceptance || {};
+  const thresholds = acceptance.thresholds || {};
+  const report = script.report || {};
+  const setLoop = (patch) => onChange({ loop: { ...loop, ...patch } });
+  const setAcceptance = (patch) => onChange({ acceptance: { ...acceptance, ...patch } });
+  const setThresholds = (patch) => setAcceptance({ thresholds: { ...thresholds, ...patch } });
+  const setReport = (patch) => onChange({ report: { ...report, ...patch } });
+
+  return (
+    <div className={`rounded-xl border p-4 ${softClass}`}>
+      <div className={`font-semibold ${isDark ? 'text-[#E8EAED]' : 'text-slate-800'}`}>自动化压测</div>
+      <div className={`text-xs mt-1 ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>本地 ADB/UIAutomator 执行，AI 只允许参与报告总结。</div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-4">
+        <NumberField label="循环次数" value={loop.count ?? 1} onChange={(value) => setLoop({ count: value })} isDark={isDark} />
+        <NumberField label="最长时长(ms)" value={loop.durationMs ?? 0} onChange={(value) => setLoop({ durationMs: value })} isDark={isDark} />
+        <NumberField label="轮次间隔(ms)" value={loop.intervalMs ?? 1000} onChange={(value) => setLoop({ intervalMs: value })} isDark={isDark} />
+        <NumberField label="最低成功率(%)" value={acceptance.minSuccessRate ?? 100} onChange={(value) => setAcceptance({ minSuccessRate: value })} isDark={isDark} />
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-4">
+        <NumberField label="CPU阈值(%)" value={thresholds.cpu ?? ''} onChange={(value) => setThresholds({ cpu: value })} isDark={isDark} />
+        <NumberField label="内存阈值(%)" value={thresholds.memory ?? ''} onChange={(value) => setThresholds({ memory: value })} isDark={isDark} />
+        <NumberField label="温度阈值(℃)" value={thresholds.batteryTemp ?? ''} onChange={(value) => setThresholds({ batteryTemp: value })} isDark={isDark} />
+        <NumberField label="存储阈值(%)" value={thresholds.dataUsed ?? ''} onChange={(value) => setThresholds({ dataUsed: value })} isDark={isDark} />
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-3">
+        <CheckOption label="失败后继续下一轮" checked={loop.continueOnError !== false} onChange={(checked) => setLoop({ continueOnError: checked })} isDark={isDark} />
+        <CheckOption label="检测崩溃日志" checked={acceptance.failOnCrash !== false} onChange={(checked) => setAcceptance({ failOnCrash: checked })} isDark={isDark} />
+        <CheckOption label="检测 ANR 日志" checked={acceptance.failOnAnr !== false} onChange={(checked) => setAcceptance({ failOnAnr: checked })} isDark={isDark} />
+        <CheckOption label="轮次性能快照" checked={report.includePerformance === true} onChange={(checked) => setReport({ includePerformance: checked })} isDark={isDark} />
+        <CheckOption label="报告 AI 分析" checked={report.includeAiSummary === true} onChange={(checked) => setReport({ includeAiSummary: checked })} isDark={isDark} />
+      </div>
+    </div>
+  );
+}
+
+function CheckOption({ label, checked, onChange, isDark }) {
+  return (
+    <label className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${isDark ? 'border-[#5F6368] bg-[#2D2F33] text-[#E8EAED]' : 'border-slate-200 bg-white text-slate-700'}`}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="accent-emerald-500" />
+      {label}
+    </label>
+  );
+}
+
+function StressRecorder({ recorder, onlineDevices, isDark, softClass, onChange, onRefresh, onRecord, onClearSteps }) {
+  const selectedNode = recorder.nodes.find(node => String(node.index) === String(recorder.selectedNodeIndex));
+  const text = isDark ? 'text-[#E8EAED]' : 'text-slate-800';
+  const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
+  const previewRef = useRef(null);
+  const detachedPreviewRef = useRef(null);
+  const detachedViewportRef = useRef(null);
+  const pointerRef = useRef(null);
+  const [gesture, setGesture] = useState(null);
+  const [detachedOpen, setDetachedOpen] = useState(false);
+  const [detachedViewportSize, setDetachedViewportSize] = useState({ width: 0, height: 0 });
+  const hasScreenshot = Boolean(recorder.screenshotDataUrl && recorder.screenshotWidth && recorder.screenshotHeight);
+
+  useEffect(() => {
+    if (!detachedOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      pointerRef.current = null;
+      setGesture(null);
+      setDetachedOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [detachedOpen]);
+
+  useEffect(() => {
+    if (!detachedOpen || !detachedViewportRef.current) return undefined;
+    const element = detachedViewportRef.current;
+    let frameId = 0;
+    const updateViewportSize = () => {
+      const rect = element.getBoundingClientRect();
+      setDetachedViewportSize(prev => {
+        const width = Math.floor(rect.width);
+        const height = Math.floor(rect.height);
+        if (prev.width === width && prev.height === height) return prev;
+        return { width, height };
+      });
+    };
+    const scheduleUpdate = () => {
+      if (frameId) cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(updateViewportSize);
+    };
+    const observer = new ResizeObserver(scheduleUpdate);
+    observer.observe(element);
+    scheduleUpdate();
+    return () => {
+      if (frameId) cancelAnimationFrame(frameId);
+      observer.disconnect();
+    };
+  }, [detachedOpen]);
+
+  const closeDetachedPreview = () => {
+    pointerRef.current = null;
+    setGesture(null);
+    setDetachedOpen(false);
+  };
+
+  const handlePreviewPointerDown = (event, element) => {
+    if (!hasScreenshot || recorder.recording) return;
+    const point = getPreviewDevicePoint(event, element, recorder);
+    if (!point) return;
+    pointerRef.current = { ...point, pointerId: event.pointerId, startedAt: Date.now(), points: [point] };
+    setGesture({ start: point, current: point, points: [point] });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const handlePreviewPointerMove = (event, element) => {
+    const start = pointerRef.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const point = getPreviewDevicePoint(event, element, recorder);
+    if (!point) return;
+    start.points = appendGesturePoint(start.points, point);
+    setGesture({ start, current: point, points: start.points });
+  };
+
+  const handlePreviewPointerUp = (event, element) => {
+    const start = pointerRef.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const end = getPreviewDevicePoint(event, element, recorder) || start;
+    const points = simplifyGesturePoints(appendGesturePoint(start.points, end, true));
+    pointerRef.current = null;
+    setGesture(null);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    const distance = Math.hypot(end.x - start.x, end.y - start.y);
+    const clickThreshold = Math.max(12, Math.min(recorder.screenshotWidth, recorder.screenshotHeight) * 0.01);
+    if (distance <= clickThreshold) {
+      const node = findNodeAtPoint(recorder.nodes, end);
+      if (node) onChange({ selectedNodeIndex: node.index });
+      onRecord('tap', { node: node || null, x: end.x, y: end.y });
+      return;
+    }
+    const durationMs = Math.max(80, Math.min(10000, Date.now() - start.startedAt || recorder.swipe.durationMs || 300));
+    onChange({ swipe: { ...recorder.swipe, x: start.x, y: start.y, endX: end.x, endY: end.y, durationMs, points } });
+    onRecord('swipe', { x: start.x, y: start.y, endX: end.x, endY: end.y, durationMs, points, curve: points.length > 2 });
+  };
+
+  const detachedPreview = hasScreenshot && detachedOpen && typeof document !== 'undefined' ? createPortal(
+    <div className="fixed inset-0 z-[150] bg-black/70 p-4">
+      <div className={`flex h-full flex-col overflow-hidden rounded-xl border shadow-2xl ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+        <div className={`flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+          <div>
+            <div className={`font-semibold ${text}`}>设备画面</div>
+            <div className={`mt-1 text-xs ${muted}`}>{recorder.screenshotWidth}x{recorder.screenshotHeight} · 点击记录点击，拖拽记录滑动</div>
+          </div>
+          <button
+            type="button"
+            onClick={closeDetachedPreview}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+          >
+            关闭
+          </button>
+        </div>
+        <div ref={detachedViewportRef} className={`flex flex-1 items-center justify-center overflow-hidden p-4 ${isDark ? 'bg-black/30' : 'bg-slate-50'}`}>
+          <RecorderPreviewSurface
+            recorder={recorder}
+            previewRef={detachedPreviewRef}
+            gesture={gesture}
+            className={`relative mx-auto overflow-hidden rounded-lg border touch-none select-none cursor-crosshair shadow-xl ${isDark ? 'border-[#3E4145] bg-black' : 'border-slate-200 bg-slate-100'}`}
+            style={getDetachedPreviewStyle(recorder, detachedViewportSize)}
+            onPointerDown={(event) => handlePreviewPointerDown(event, detachedPreviewRef.current)}
+            onPointerMove={(event) => handlePreviewPointerMove(event, detachedPreviewRef.current)}
+            onPointerUp={(event) => handlePreviewPointerUp(event, detachedPreviewRef.current)}
+            onPointerCancel={() => { pointerRef.current = null; setGesture(null); }}
+          />
+        </div>
+      </div>
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <div className={`rounded-xl border p-4 ${softClass}`}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className={`font-semibold ${text}`}>录制回放</div>
+          <div className={`text-xs mt-1 ${muted}`}>读取设备 UI 层级，执行一次操作并追加为可回放步骤。</div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {onlineDevices.map(device => {
+            const selected = recorder.deviceId === device.id;
+            return (
+              <button
+                key={device.id}
+                onClick={() => {
+                  closeDetachedPreview();
+                  onChange({ deviceId: device.id, nodes: [], selectedNodeIndex: '', screenshotDataUrl: '', screenshotWidth: 0, screenshotHeight: 0 });
+                }}
+                className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 ${selected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}
+              >
+                <Smartphone size={13} />
+                <span className="max-w-[180px] truncate">{device.model || device.name || device.id}</span>
+              </button>
+            );
+          })}
+          <button onClick={onRefresh} disabled={!recorder.deviceId || recorder.loading} className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 disabled:opacity-50 ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}>
+            <RefreshCw size={13} className={recorder.loading ? 'animate-spin' : ''} />
+            读取界面
+          </button>
+          <button onClick={onClearSteps} className="px-3 py-2 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 inline-flex items-center gap-1.5">
+            <Trash2 size={13} />
+            清空步骤
+          </button>
+        </div>
+      </div>
+
+      {recorder.error && (
+        <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${isDark ? 'border-red-500/30 bg-red-500/10 text-red-300' : 'border-red-200 bg-red-50 text-red-600'}`}>
+          {recorder.error}
+        </div>
+      )}
+
+      <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(300px,0.9fr)_minmax(380px,1.1fr)]">
+        <div className={`rounded-lg border overflow-hidden min-w-0 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+          <div className={`px-3 py-2 border-b flex flex-wrap items-center justify-between gap-3 text-xs ${isDark ? 'border-[#3E4145] text-[#9AA0A6]' : 'border-slate-100 text-slate-500'}`}>
+            <div className="flex items-center gap-2">
+              <span>设备画面</span>
+              <span>{hasScreenshot ? `${recorder.screenshotWidth}x${recorder.screenshotHeight}` : '未读取'}</span>
+            </div>
+            {hasScreenshot && (
+              <button
+                type="button"
+                onClick={() => setDetachedOpen(true)}
+                className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+                title="放大查看"
+              >
+                <Maximize2 size={12} />
+                放大查看
+              </button>
+            )}
+          </div>
+          <div className="p-3">
+            {hasScreenshot ? (
+              <RecorderPreviewSurface
+                recorder={recorder}
+                previewRef={previewRef}
+                gesture={gesture}
+                className={`relative mx-auto max-h-[460px] max-w-full overflow-hidden rounded-lg border touch-none select-none cursor-crosshair ${isDark ? 'border-[#3E4145] bg-black' : 'border-slate-200 bg-slate-100'}`}
+                style={{ aspectRatio: `${recorder.screenshotWidth} / ${recorder.screenshotHeight}` }}
+                onPointerDown={(event) => handlePreviewPointerDown(event, previewRef.current)}
+                onPointerMove={(event) => handlePreviewPointerMove(event, previewRef.current)}
+                onPointerUp={(event) => handlePreviewPointerUp(event, previewRef.current)}
+                onPointerCancel={() => { pointerRef.current = null; setGesture(null); }}
+              />
+            ) : (
+              <div className={`py-16 text-center text-sm ${muted}`}>点击“读取界面”后，可直接在设备画面上点击或拖拽录制。</div>
+            )}
+          </div>
+
+          <div className={`border-t px-3 py-2 flex items-center justify-between gap-3 text-xs ${isDark ? 'border-[#3E4145] text-[#9AA0A6]' : 'border-slate-100 text-slate-500'}`}>
+            <span>当前界面控件</span>
+            <span>{recorder.nodes.length > 0 ? `${recorder.nodes.length} 个` : '未读取'}</span>
+          </div>
+          <div className="max-h-[220px] overflow-y-auto p-2 space-y-1.5">
+            {recorder.nodes.length === 0 ? (
+              <div className={`py-8 text-center text-sm ${muted}`}>控件列表为空</div>
+            ) : recorder.nodes.map(node => (
+              <button
+                key={node.index}
+                onClick={() => onChange({ selectedNodeIndex: node.index })}
+                className={`w-full rounded-lg border px-3 py-2.5 text-left transition-colors ${String(recorder.selectedNodeIndex) === String(node.index) ? 'border-emerald-500/40 bg-emerald-500/10' : isDark ? 'border-transparent hover:bg-[#2D2F33]' : 'border-transparent hover:bg-slate-50'}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className={`text-sm font-semibold truncate ${text}`}>{node.label}</div>
+                    <div className={`text-[11px] mt-1 truncate ${muted}`}>{node.resourceId || node.contentDesc || node.className || node.xpath || '无标识'}</div>
+                  </div>
+                  <div className={`text-[10px] shrink-0 ${muted}`}>#{node.index}</div>
+                </div>
+                <div className={`mt-1 text-[11px] truncate ${muted}`}>{node.bounds}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-3 min-w-0">
+          <div className={`rounded-lg border p-4 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+            <div className={`text-xs mb-2 ${muted}`}>选中控件</div>
+            <div className={`text-base font-semibold break-words ${text}`}>{selectedNode?.label || '未选择控件'}</div>
+            <div className={`text-xs mt-1 break-all ${muted}`}>{selectedNode?.resourceId || selectedNode?.contentDesc || selectedNode?.className || selectedNode?.xpath || '-'}</div>
+            <div className={`text-[11px] mt-1 ${muted}`}>{selectedNode?.bounds || '-'}</div>
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('tap')} className={recorderButtonClass(isDark)}>
+                <Smartphone size={13} />
+                点击
+              </button>
+              <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('waitText', { timeoutMs: recorder.timeoutMs })} className={recorderButtonClass(isDark)}>
+                <Clock3 size={13} />
+                等待
+              </button>
+              <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('assertText', { timeoutMs: recorder.timeoutMs })} className={recorderButtonClass(isDark)}>
+                <CheckCircle2 size={13} />
+                断言
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className={`rounded-lg border p-3 space-y-2 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+              <TextField label="输入文本" value={recorder.inputText} onChange={(value) => onChange({ inputText: value })} placeholder="输入到当前焦点" isDark={isDark} />
+              <button disabled={!recorder.inputText || recorder.recording} onClick={() => onRecord('input', { text: recorder.inputText })} className={recorderButtonClass(isDark, true)}>
+                <Terminal size={13} />
+                输入并记录
+              </button>
+            </div>
+
+            <div className={`rounded-lg border p-3 space-y-2 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+              <TextField label="KeyCode" value={recorder.keyCode} onChange={(value) => onChange({ keyCode: value })} placeholder="例如：66" isDark={isDark} />
+              <button disabled={!recorder.keyCode || recorder.recording} onClick={() => onRecord('keyevent', { keyCode: recorder.keyCode })} className={recorderButtonClass(isDark, true)}>
+                <Terminal size={13} />
+                按键并记录
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className={`mt-4 rounded-lg border p-4 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className={`text-sm font-semibold ${text}`}>手势与等待</div>
+            <div className={`text-xs mt-1 ${muted}`}>在设备画面上点击会记录点击，拖拽会记录滑动；手动坐标只作为兜底。</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button disabled={recorder.recording} onClick={() => onRecord('delay', { durationMs: recorder.delayMs })} className={recorderButtonClass(isDark)}>
+              <Clock3 size={13} />
+              追加等待步骤
+            </button>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <NumberField label="等待/断言超时(ms)" value={recorder.timeoutMs} onChange={(value) => onChange({ timeoutMs: value })} isDark={isDark} />
+          <NumberField label="等待步骤(ms)" value={recorder.delayMs} onChange={(value) => onChange({ delayMs: value })} isDark={isDark} />
+        </div>
+        <details className={`mt-4 rounded-lg border ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+          <summary className={`cursor-pointer px-3 py-2 text-xs ${muted}`}>高级手动坐标</summary>
+          <div className="grid gap-3 p-3 sm:grid-cols-2 lg:grid-cols-5">
+            <NumberField label="起点X" value={recorder.swipe.x} onChange={(value) => onChange({ swipe: { ...recorder.swipe, x: value, points: [] } })} isDark={isDark} />
+            <NumberField label="起点Y" value={recorder.swipe.y} onChange={(value) => onChange({ swipe: { ...recorder.swipe, y: value, points: [] } })} isDark={isDark} />
+            <NumberField label="终点X" value={recorder.swipe.endX} onChange={(value) => onChange({ swipe: { ...recorder.swipe, endX: value, points: [] } })} isDark={isDark} />
+            <NumberField label="终点Y" value={recorder.swipe.endY} onChange={(value) => onChange({ swipe: { ...recorder.swipe, endY: value, points: [] } })} isDark={isDark} />
+            <NumberField label="滑动时长(ms)" value={recorder.swipe.durationMs} onChange={(value) => onChange({ swipe: { ...recorder.swipe, durationMs: value, points: [] } })} isDark={isDark} />
+            <button disabled={recorder.recording} onClick={() => onRecord('swipe', recorder.swipe)} className={`${recorderButtonClass(isDark, true)} lg:col-span-5`}>
+              <Smartphone size={13} />
+              按手动坐标滑动并记录
+            </button>
+          </div>
+        </details>
+      </div>
+      {detachedPreview}
+    </div>
+  );
+}
+
+function recorderButtonClass(isDark, full = false) {
+  return `${full ? 'w-full ' : ''}inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-xs disabled:opacity-50 disabled:cursor-not-allowed ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`;
+}
+
+function RecorderPreviewSurface({ recorder, previewRef, gesture, className, style, onPointerDown, onPointerMove, onPointerUp, onPointerCancel }) {
+  return (
+    <div
+      ref={previewRef}
+      role="button"
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      className={className}
+      style={style}
+      title="点击记录点击动作，拖拽记录滑动动作"
+    >
+      <img
+        src={recorder.screenshotDataUrl}
+        alt="设备画面"
+        draggable={false}
+        className="h-full w-full object-contain"
+      />
+      <div className="pointer-events-none absolute inset-0">
+        {recorder.nodes.map(node => node.rect && (
+          <div
+            key={node.index}
+            className={`absolute rounded-sm border ${String(recorder.selectedNodeIndex) === String(node.index) ? 'border-emerald-400 bg-emerald-400/15' : 'border-emerald-300/40 bg-emerald-300/5'}`}
+            style={nodeOverlayStyle(node, recorder)}
+          />
+        ))}
+        {gesture && (
+          <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${recorder.screenshotWidth} ${recorder.screenshotHeight}`} preserveAspectRatio="none">
+            <polyline points={formatSvgPoints(gesture.points || [gesture.start, gesture.current])} fill="none" stroke="#22c55e" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
+            <circle cx={gesture.start.x} cy={gesture.start.y} r="10" fill="#22c55e" />
+            <circle cx={gesture.current.x} cy={gesture.current.y} r="10" fill="#10b981" />
+          </svg>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function getDetachedPreviewStyle(recorder, viewportSize) {
+  const width = Number(recorder.screenshotWidth) || 1;
+  const height = Number(recorder.screenshotHeight) || 1;
+  const viewportWidth = Math.max(1, Number(viewportSize?.width) || width);
+  const viewportHeight = Math.max(1, Number(viewportSize?.height) || height);
+  const fitScale = Math.min(viewportWidth / width, viewportHeight / height);
+  const previewWidth = Math.max(1, Math.floor(width * fitScale));
+  const previewHeight = Math.max(1, Math.floor(height * fitScale));
+  return {
+    width: `${previewWidth}px`,
+    height: `${previewHeight}px`
+  };
+}
+
+function getPreviewDevicePoint(event, element, recorder) {
+  if (!element || !recorder.screenshotWidth || !recorder.screenshotHeight) return null;
+  const rect = element.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const x = Math.max(0, Math.min(recorder.screenshotWidth, Math.round((event.clientX - rect.left) / rect.width * recorder.screenshotWidth)));
+  const y = Math.max(0, Math.min(recorder.screenshotHeight, Math.round((event.clientY - rect.top) / rect.height * recorder.screenshotHeight)));
+  return { x, y };
+}
+
+function appendGesturePoint(points, point, force = false) {
+  const nextPoint = { x: Math.round(point.x), y: Math.round(point.y) };
+  const source = Array.isArray(points) ? points : [];
+  const last = source[source.length - 1];
+  if (!force && last && Math.hypot(nextPoint.x - last.x, nextPoint.y - last.y) < 8) return source;
+  if (last && last.x === nextPoint.x && last.y === nextPoint.y) return source;
+  return [...source, nextPoint].slice(-120);
+}
+
+function simplifyGesturePoints(points, maxPoints = 48) {
+  const source = (Array.isArray(points) ? points : [])
+    .map(point => ({ x: Math.round(Number(point.x)), y: Math.round(Number(point.y)) }))
+    .filter(point => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (source.length <= maxPoints) return source;
+  const result = [source[0]];
+  const step = (source.length - 1) / (maxPoints - 1);
+  for (let i = 1; i < maxPoints - 1; i += 1) {
+    result.push(source[Math.round(i * step)]);
+  }
+  result.push(source[source.length - 1]);
+  return result;
+}
+
+function formatSvgPoints(points) {
+  return (Array.isArray(points) ? points : [])
+    .map(point => `${Math.round(point.x)},${Math.round(point.y)}`)
+    .join(' ');
+}
+
+function formatGesturePointsInput(points) {
+  if (Array.isArray(points)) return points.length > 0 ? JSON.stringify(points) : '';
+  return String(points || '');
+}
+
+function findNodeAtPoint(nodes, point) {
+  const candidates = (nodes || []).filter(node => {
+    const rect = node.rect;
+    return rect && point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+  });
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => rectArea(a.rect) - rectArea(b.rect))[0];
+}
+
+function rectArea(rect) {
+  return Math.max(0, rect.right - rect.left) * Math.max(0, rect.bottom - rect.top);
+}
+
+function nodeOverlayStyle(node, recorder) {
+  const rect = node.rect || {};
+  const width = recorder.screenshotWidth || 1;
+  const height = recorder.screenshotHeight || 1;
+  return {
+    left: `${rect.left / width * 100}%`,
+    top: `${rect.top / height * 100}%`,
+    width: `${Math.max(0, rect.right - rect.left) / width * 100}%`,
+    height: `${Math.max(0, rect.bottom - rect.top) / height * 100}%`
+  };
 }
 
 function StepTypeDropdown({ value, isDark, onChange }) {
@@ -611,6 +1392,69 @@ function renderStepFields(step, onChange, isDark) {
   if (step.type === 'screenshot') {
     return <TextField label="保存路径（可选）" value={step.localPath} onChange={(value) => onChange({ localPath: value })} placeholder="留空则保存到任务产物目录" isDark={isDark} />;
   }
+  if (step.type === 'imageCompare') {
+    return (
+      <>
+        <TextField label="基准图路径" value={step.baselinePath} onChange={(value) => onChange({ baselinePath: value })} placeholder="C:\\path\\baseline.png" isDark={isDark} />
+        <NumberField label="相似度阈值(%)" value={step.threshold} onChange={(value) => onChange({ threshold: value })} isDark={isDark} />
+      </>
+    );
+  }
+  if (step.type === 'tap') {
+    return (
+      <>
+        <TextField label="文本选择器" value={step.text} onChange={(value) => onChange({ text: value })} placeholder="例如：登录" isDark={isDark} />
+        <TextField label="resource-id" value={step.resourceId} onChange={(value) => onChange({ resourceId: value })} placeholder="com.example:id/login" isDark={isDark} />
+        <TextField label="content-desc" value={step.contentDesc} onChange={(value) => onChange({ contentDesc: value })} placeholder="例如：登录按钮" isDark={isDark} />
+        <TextField label="className" value={step.className} onChange={(value) => onChange({ className: value })} placeholder="android.widget.TextView" isDark={isDark} />
+        <TextField label="XPath-like 路径" value={step.xpath} onChange={(value) => onChange({ xpath: value })} placeholder="录制后自动生成，可手动调整" isDark={isDark} />
+        <NumberField label="X坐标（可选）" value={step.x ?? ''} onChange={(value) => onChange({ x: value })} isDark={isDark} />
+        <NumberField label="Y坐标（可选）" value={step.y ?? ''} onChange={(value) => onChange({ y: value })} isDark={isDark} />
+      </>
+    );
+  }
+  if (step.type === 'swipe') {
+    return (
+      <>
+        <NumberField label="起点X" value={step.x ?? ''} onChange={(value) => onChange({ x: value })} isDark={isDark} />
+        <NumberField label="起点Y" value={step.y ?? ''} onChange={(value) => onChange({ y: value })} isDark={isDark} />
+        <NumberField label="终点X" value={step.endX ?? ''} onChange={(value) => onChange({ endX: value })} isDark={isDark} />
+        <NumberField label="终点Y" value={step.endY ?? ''} onChange={(value) => onChange({ endY: value })} isDark={isDark} />
+        <NumberField label="滑动时长(ms)" value={step.durationMs} onChange={(value) => onChange({ durationMs: value })} isDark={isDark} />
+        <TextAreaField label="曲线路径点(JSON，可选)" value={formatGesturePointsInput(step.points)} onChange={(value) => onChange({ points: value })} placeholder='例如：[{"x":100,"y":200},{"x":180,"y":260},{"x":260,"y":220}]' isDark={isDark} />
+      </>
+    );
+  }
+  if (step.type === 'input') {
+    return <TextField label="输入文本" value={step.text} onChange={(value) => onChange({ text: value })} placeholder="输入到当前焦点" isDark={isDark} />;
+  }
+  if (step.type === 'keyevent') {
+    return <TextField label="KeyCode" value={step.keyCode} onChange={(value) => onChange({ keyCode: value })} placeholder="例如：66 表示 Enter" isDark={isDark} />;
+  }
+  if (step.type === 'waitText' || step.type === 'assertText') {
+    return (
+      <>
+        <TextField label="文本" value={step.text} onChange={(value) => onChange({ text: value })} placeholder="需要等待或断言的文本" isDark={isDark} />
+        <TextField label="包含文本（可选）" value={step.textContains} onChange={(value) => onChange({ textContains: value })} placeholder="只要求控件文本包含该内容" isDark={isDark} />
+        <TextField label="resource-id（可选）" value={step.resourceId} onChange={(value) => onChange({ resourceId: value })} placeholder="可选：进一步限定控件" isDark={isDark} />
+        <TextField label="content-desc（可选）" value={step.contentDesc} onChange={(value) => onChange({ contentDesc: value })} placeholder="可选：无文本控件的描述" isDark={isDark} />
+        <TextField label="className（可选）" value={step.className} onChange={(value) => onChange({ className: value })} placeholder="android.widget.TextView" isDark={isDark} />
+        <TextField label="XPath-like 路径（可选）" value={step.xpath} onChange={(value) => onChange({ xpath: value })} placeholder="录制后自动生成，可手动调整" isDark={isDark} />
+        {step.type === 'waitText' && <NumberField label="轮询间隔(ms)" value={step.intervalMs} onChange={(value) => onChange({ intervalMs: value })} isDark={isDark} />}
+      </>
+    );
+  }
+  if (step.type === 'externalScript') {
+    return (
+      <>
+        <TextField label="适配器" value={step.adapter} onChange={(value) => onChange({ adapter: value })} placeholder="custom / maestro / appium / uiautomator2" isDark={isDark} />
+        <TextField label="脚本路径" value={step.scriptPath} onChange={(value) => onChange({ scriptPath: value })} placeholder="C:\\path\\script.py 或 .yaml" isDark={isDark} />
+        <TextField label="命令（可选）" value={step.command} onChange={(value) => onChange({ command: value })} placeholder="留空时按脚本后缀或适配器推断" isDark={isDark} />
+        <TextField label="参数" value={step.args} onChange={(value) => onChange({ args: value })} placeholder="{deviceId} {artifactDir} {scriptPath} {adb}" isDark={isDark} />
+        <TextField label="工作目录（可选）" value={step.workingDir} onChange={(value) => onChange({ workingDir: value })} placeholder="留空默认脚本所在目录" isDark={isDark} />
+      </>
+    );
+  }
   if (step.type === 'inspection') {
     return (
       <>
@@ -694,6 +1538,11 @@ function TaskCard({ task, theme, onCancel, onOpenPath }) {
         <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
       </div>
       <div className={`mt-2 text-xs ${muted}`}>完成 {task.completedSteps || 0}，失败 {task.failedSteps || 0}，总计 {task.totalSteps || 0}</div>
+      {task.mode === 'stress' && task.stressSummary && (
+        <div className={`mt-2 text-xs ${task.stressSummary.passed ? 'text-emerald-400' : 'text-red-400'}`}>
+          压测轮次 {task.stressSummary.successRounds || 0}/{task.stressSummary.totalRounds || 0}，成功率 {task.stressSummary.successRate || 0}%
+        </div>
+      )}
       {task.artifactDir && (
         <div className={`mt-2 rounded border px-2 py-2 ${isDark ? 'border-[#3E4145] bg-[#2D2F33]' : 'border-slate-200 bg-white'}`}>
           <div className={`text-[11px] truncate ${muted}`}>{task.artifactDir}</div>
@@ -769,11 +1618,20 @@ function TextField({ label, value, onChange, placeholder, isDark }) {
   );
 }
 
+function TextAreaField({ label, value, onChange, placeholder, isDark }) {
+  return (
+    <label className="block lg:col-span-2">
+      <FieldLabel label={label} isDark={isDark} />
+      <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={3} className={fieldClass(isDark, 'font-mono')} />
+    </label>
+  );
+}
+
 function NumberField({ label, value, onChange, isDark }) {
   return (
     <label className="block">
       <FieldLabel label={label} isDark={isDark} />
-      <input type="number" value={value} onChange={(e) => onChange(Number(e.target.value))} className={fieldClass(isDark)} />
+      <input type="number" value={value} onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass(isDark)} />
     </label>
   );
 }
@@ -791,8 +1649,38 @@ function createEmptyScript() {
     id: `script-${Date.now()}`,
     name: '新复现脚本',
     description: '',
+    mode: 'replay',
     continueOnError: true,
+    loop: { count: 1, durationMs: 0, intervalMs: 1000, continueOnError: true },
+    acceptance: { minSuccessRate: 100, failOnCrash: true, failOnAnr: true, thresholds: { cpu: '', memory: '', batteryTemp: '', dataUsed: '' } },
+    report: { includeAiSummary: false, includePerformance: false },
     steps: [createStep('shell')]
+  };
+}
+
+function createRecorderState() {
+  return {
+    deviceId: '',
+    nodes: [],
+    selectedNodeIndex: '',
+    loading: false,
+    recording: false,
+    error: '',
+    screenshotDataUrl: '',
+    screenshotWidth: 0,
+    screenshotHeight: 0,
+    inputText: '',
+    keyCode: '66',
+    timeoutMs: 10000,
+    delayMs: 1000,
+    swipe: {
+      x: '',
+      y: '',
+      endX: '',
+      endY: '',
+      durationMs: 300,
+      points: []
+    }
   };
 }
 
@@ -806,6 +1694,26 @@ function createStep(type) {
     remotePath: type === 'pushFile' ? '/sdcard/' : '',
     keyword: '',
     regex: '',
+    text: '',
+    textContains: '',
+    resourceId: '',
+    contentDesc: '',
+    className: '',
+    xpath: '',
+    selector: {},
+    x: '',
+    y: '',
+    endX: '',
+    endY: '',
+    points: [],
+    keyCode: '',
+    baselinePath: '',
+    threshold: 98,
+    adapter: type === 'externalScript' ? 'custom' : '',
+    scriptPath: '',
+    args: type === 'externalScript' ? '{deviceId}' : '',
+    workingDir: '',
+    critical: false,
     outputBaseDir: '',
     includeBugreport: false,
     includeAiSummary: true,

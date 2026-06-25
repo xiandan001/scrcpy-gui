@@ -25,6 +25,7 @@ let pidPackageMap = new Map();
 // - realtime: 实时日志字节总量上限 100MB
 // - file: 文件日志字节总量追踪
 const LOG_STORE_BYTES_LIMIT = 100 * 1024 * 1024; // 100MB
+const LOG_STORE_REALTIME_MAX_ENTRIES = 200000;
 const LOG_STORE_FILE_MAX_ENTRIES = 200000; // file 日志条数上限
 let logStoreBytes = { realtime: 0, file: 0 };
 
@@ -34,6 +35,61 @@ const LOG_BATCH_SIZE = 50;
 const LOG_BATCH_FLUSH_INTERVAL_MS = 100;
 let pendingLogBatch = [];
 let logBatchFlushTimer = null;
+
+function entryBytes(entry) {
+  return Buffer.byteLength(entry?.raw || '', 'utf8');
+}
+
+function clearLogBatchState() {
+  if (logBatchFlushTimer) {
+    clearTimeout(logBatchFlushTimer);
+    logBatchFlushTimer = null;
+  }
+  pendingLogBatch = [];
+}
+
+function resetLogStoreSource(source) {
+  logStore[source] = [];
+  logStoreBytes[source] = 0;
+}
+
+function trimLogStore(source, maxEntries = LOG_STORE_REALTIME_MAX_ENTRIES) {
+  const store = logStore[source];
+  if (!store || store.length === 0) return;
+
+  let removeCount = Math.max(0, store.length - maxEntries);
+  let removeBytes = 0;
+  for (let i = 0; i < removeCount; i++) {
+    removeBytes += entryBytes(store[i]);
+  }
+
+  while (
+    removeCount < store.length &&
+    logStoreBytes[source] - removeBytes > LOG_STORE_BYTES_LIMIT
+  ) {
+    removeBytes += entryBytes(store[removeCount]);
+    removeCount++;
+  }
+
+  if (removeCount > 0) {
+    store.splice(0, removeCount);
+    logStoreBytes[source] = Math.max(0, logStoreBytes[source] - removeBytes);
+  }
+}
+
+function appendLogStoreEntry(source, entry, maxEntries) {
+  if (!logStore[source]) {
+    logStore[source] = [];
+    logStoreBytes[source] = 0;
+  }
+  logStore[source].push(entry);
+  logStoreBytes[source] += entryBytes(entry);
+  trimLogStore(source, maxEntries);
+}
+
+function appendRealtimeEntry(entry) {
+  appendLogStoreEntry('realtime', entry, LOG_STORE_REALTIME_MAX_ENTRIES);
+}
 
 function flushLogBatch() {
   if (pendingLogBatch.length === 0) return;
@@ -184,9 +240,10 @@ function createLogAnalyzerWindow() {
     }
     // 停止 PID 包名解析器
     stopPidPackageResolver();
+    clearLogBatchState();
     // 清空日志存储（释放大量内存）
-    logStore.realtime = [];
-    logStore.file = [];
+    resetLogStoreSource('realtime');
+    resetLogStoreSource('file');
     // 中止正在进行的 AI 分析
     require('./ai-analyze.cjs').abortAiRequest();
     ctx.setLogAnalyzerWindow(null);
@@ -227,19 +284,18 @@ function register(ipcMain) {
       // 延迟 require 以打破与 auto-diagnose 的循环依赖
       const autoDiagnose = require('./auto-diagnose.cjs');
 
-      currentLogSource = 'realtime';
-      logStore.realtime = [];
-      // 重置 realtime 字节计数器
-      logStoreBytes.realtime = 0;
-      execFile('adb', ['logcat', '-c'], { windowsHide: true, timeout: 5000 });
-      ctx.broadcastToAllWindows('log:reset', { source: 'realtime', entries: [] });
-
-      startPidPackageResolver('adb', args?.deviceId);
-
       if (logcatProc) {
         try { logcatProc.kill(); } catch {}
         logcatProc = null;
       }
+
+      currentLogSource = 'realtime';
+      clearLogBatchState();
+      resetLogStoreSource('realtime');
+      execFile('adb', ['logcat', '-c'], { windowsHide: true, timeout: 5000 });
+      ctx.broadcastToAllWindows('log:reset', { source: 'realtime', entries: [] });
+
+      startPidPackageResolver('adb', args?.deviceId);
 
       const adbArgs = [];
       if (args?.deviceId) adbArgs.push('-s', args.deviceId);
@@ -262,24 +318,11 @@ function register(ipcMain) {
 
       const rl = readline.createInterface({ input: p.stdout });
       rl.on('line', (line) => {
+        if (logcatProc !== p) return;
         const entry = parseLogLine('realtime', line);
         const pkg = resolvePkg(entry.pid);
         if (pkg) entry.pkg = pkg;
-        logStore.realtime.push(entry);
-        // 按字节限制 + 条数上限双重保护，防止内存无限增长
-        const entryBytes = Buffer.byteLength(entry.raw || '', 'utf8');
-        logStoreBytes.realtime += entryBytes;
-        if (logStore.realtime.length > 200000) {
-          const removed = logStore.realtime.splice(0, logStore.realtime.length - 200000);
-          for (const r of removed) {
-            logStoreBytes.realtime -= Buffer.byteLength(r.raw || '', 'utf8');
-          }
-        }
-        // 字节上限 100MB：从前面删除日志直到降到上限以下
-        while (logStoreBytes.realtime > LOG_STORE_BYTES_LIMIT && logStore.realtime.length > 0) {
-          const removed = logStore.realtime.shift();
-          logStoreBytes.realtime -= Buffer.byteLength(removed.raw || '', 'utf8');
-        }
+        appendRealtimeEntry(entry);
         // 批量发送：累积日志条目，每 100ms 或满 50 条时批量发送（减少 IPC 调用）
         pushLogToBatch(entry);
         // AI 自动诊断：检测崩溃/ANR/OOM 等关键问题
@@ -329,12 +372,10 @@ function register(ipcMain) {
     const s = args?.source ?? currentLogSource;
     if (!s || s === 'realtime') {
       execFile('adb', ['logcat', '-c'], { windowsHide: true, timeout: 5000 });
+      clearLogBatchState();
     }
-    if (!s || s === 'realtime') logStore.realtime = [];
-    if (!s || s === 'file') logStore.file = [];
-    // 同步重置字节计数器，避免计数器与实际数组不一致
-    if (!s || s === 'realtime') logStoreBytes.realtime = 0;
-    if (!s || s === 'file') logStoreBytes.file = 0;
+    if (!s || s === 'realtime') resetLogStoreSource('realtime');
+    if (!s || s === 'file') resetLogStoreSource('file');
     // 同步重置自动诊断去抖时间戳，避免下次抓取/加载时旧时间戳抑制告警
     autoDiagnose.resetAutoDiagnoseLastFire();
     ctx.broadcastToAllWindows('log:reset', { source: s ?? currentLogSource, entries: [] });
@@ -457,8 +498,8 @@ function getLogcatProc() { return logcatProc; }
 function setLogcatProc(proc) { logcatProc = proc; }
 function setCurrentLogSource(source) { currentLogSource = source; }
 function resetLogStoreRealtime() {
-  logStore.realtime = [];
-  logStoreBytes.realtime = 0;
+  clearLogBatchState();
+  resetLogStoreSource('realtime');
 }
 function getLogStoreBytes() { return logStoreBytes; }
 function getLogStoreBytesLimit() { return LOG_STORE_BYTES_LIMIT; }
@@ -485,12 +526,11 @@ function getResolvePkg() { return resolvePkg; }
 // 给 MCP 直接修改 logStore.file（log_clear 工具）
 function clearLogStoreBySource(source) {
   if (!source || source === 'realtime') {
-    logStore.realtime = [];
-    logStoreBytes.realtime = 0;
+    clearLogBatchState();
+    resetLogStoreSource('realtime');
   }
   if (!source || source === 'file') {
-    logStore.file = [];
-    logStoreBytes.file = 0;
+    resetLogStoreSource('file');
   }
 }
 function setLogStoreFileEntries(entries) {
@@ -510,6 +550,7 @@ module.exports = {
   resetLogStoreRealtime,
   getLogStoreBytes,
   getLogStoreBytesLimit,
+  appendRealtimeEntry,
   // 批处理工具（供 MCP 使用）
   getPushLogToBatch,
   getFlushLogBatch,
