@@ -31,6 +31,7 @@ specs/
 docs/superpowers/specs/
 superpowers/specs/
 **/superpowers/specs/
+.superpowers/
 
 # Private API keys (local only, packed into release builds by electron-builder)
 electron/api-keys.cjs

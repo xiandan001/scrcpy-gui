@@ -47,6 +47,37 @@ const STEP_TYPES = [
   { value: 'delay', label: '等待', description: '等待指定毫秒数', icon: Clock3 }
 ];
 
+const QUICK_TEMPLATES = [
+  {
+    id: 'record',
+    title: '录制操作流程',
+    description: '读取设备界面后，直接点击或拖拽设备画面生成步骤。',
+    icon: Smartphone,
+    action: 'template'
+  },
+  {
+    id: 'launch',
+    title: '启动应用稳定性',
+    description: '填写包名后循环启动应用，自动采集截图和性能快照。',
+    icon: Package,
+    action: 'template'
+  },
+  {
+    id: 'compare',
+    title: '截图比对验收',
+    description: '采集当前画面并与基准图比对，适合页面稳定性验证。',
+    icon: Camera,
+    action: 'template'
+  },
+  {
+    id: 'external',
+    title: '导入外部脚本',
+    description: '导入现有 Python、bat、Maestro、Appium 或自定义脚本。',
+    icon: Terminal,
+    action: 'import'
+  }
+];
+
 function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const t = theme;
   const isDark = t.primary === 'tech';
@@ -60,6 +91,7 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [recorder, setRecorder] = useState(createRecorderState());
+  const [editorMode, setEditorMode] = useState('simple');
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
 
@@ -144,6 +176,21 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
     const next = createEmptyScript();
     setSelectedScriptId(next.id);
     setDraft(next);
+    setEditorMode('simple');
+  };
+
+  const applyQuickTemplate = (templateId) => {
+    if (templateId === 'external') {
+      importStressScript();
+      return;
+    }
+    const next = createTemplateScript(templateId);
+    setSelectedScriptId(next.id);
+    setDraft(next);
+    setEditorMode('simple');
+    if (templateId === 'record') showToast?.('已创建录制流程，选择设备后读取界面即可开始');
+    if (templateId === 'launch') showToast?.('已创建启动应用压测模板，请先填写应用包名');
+    if (templateId === 'compare') showToast?.('已创建截图比对模板，请设置基准图后运行');
   };
 
   const saveScript = async () => {
@@ -401,12 +448,30 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
               <ClipboardList size={20} className="text-emerald-500" />
               任务中心
             </h3>
-            <p className={`text-sm mt-1 ${muted}`}>保存复现脚本，批量运行到多台设备，并沉淀执行证据。</p>
+            <p className={`text-sm mt-1 ${muted}`}>默认按场景录制和运行，高级编排保留完整脚本能力。</p>
           </div>
-          <div className="grid grid-cols-3 gap-3 w-full xl:w-auto xl:min-w-[420px]">
-            <StatCard label="在线设备" value={onlineDevices.length} theme={t} />
-            <StatCard label="运行任务" value={activeCount} theme={t} />
-            <StatCard label="历史记录" value={history.length} theme={t} />
+          <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto xl:items-center">
+            <div className={`inline-flex rounded-lg border p-1 ${isDark ? 'border-[#3E4145] bg-[#2D2F33]' : 'border-slate-200 bg-slate-50'}`}>
+              <button
+                type="button"
+                onClick={() => setEditorMode('simple')}
+                className={`px-3 py-1.5 rounded-md text-sm transition-colors ${editorMode === 'simple' ? 'bg-emerald-600 text-white shadow-sm' : isDark ? 'text-[#BDC1C6] hover:bg-[#3E4145]' : 'text-slate-600 hover:bg-white'}`}
+              >
+                普通模式
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditorMode('advanced')}
+                className={`px-3 py-1.5 rounded-md text-sm transition-colors ${editorMode === 'advanced' ? 'bg-emerald-600 text-white shadow-sm' : isDark ? 'text-[#BDC1C6] hover:bg-[#3E4145]' : 'text-slate-600 hover:bg-white'}`}
+              >
+                高级编排
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-3 w-full sm:min-w-[420px]">
+              <StatCard label="在线设备" value={onlineDevices.length} theme={t} />
+              <StatCard label="运行任务" value={activeCount} theme={t} />
+              <StatCard label="历史记录" value={history.length} theme={t} />
+            </div>
           </div>
         </div>
       </div>
@@ -457,24 +522,28 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
                 placeholder="描述这个脚本的用途"
               />
             </div>
-            <label className={`flex items-center gap-2 text-xs ${muted}`}>
-              <input
-                type="checkbox"
-                checked={draft.continueOnError}
-                onChange={(e) => setDraft(prev => ({ ...prev, continueOnError: e.target.checked }))}
-                className="accent-emerald-500"
-              />
-              失败后继续执行
-            </label>
-            <label className={`flex items-center gap-2 text-xs ${muted}`}>
-              <input
-                type="checkbox"
-                checked={draft.mode === 'stress'}
-                onChange={(e) => setDraft(prev => ({ ...prev, mode: e.target.checked ? 'stress' : 'replay' }))}
-                className="accent-emerald-500"
-              />
-              自动化压测
-            </label>
+            {editorMode === 'advanced' && (
+              <>
+                <label className={`flex items-center gap-2 text-xs ${muted}`}>
+                  <input
+                    type="checkbox"
+                    checked={draft.continueOnError}
+                    onChange={(e) => setDraft(prev => ({ ...prev, continueOnError: e.target.checked }))}
+                    className="accent-emerald-500"
+                  />
+                  失败后继续执行
+                </label>
+                <label className={`flex items-center gap-2 text-xs ${muted}`}>
+                  <input
+                    type="checkbox"
+                    checked={draft.mode === 'stress'}
+                    onChange={(e) => setDraft(prev => ({ ...prev, mode: e.target.checked ? 'stress' : 'replay' }))}
+                    className="accent-emerald-500"
+                  />
+                  自动化压测
+                </label>
+              </>
+            )}
             <button onClick={saveScript} disabled={saving} className={`px-4 py-2 rounded-lg flex items-center gap-2 disabled:opacity-50 ${t.button.secondary}`}>
               {saving ? <RefreshCw size={15} className="animate-spin" /> : <Save size={15} />}
               保存
@@ -492,97 +561,129 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
           </div>
 
           <div className="p-5 space-y-5">
-            <div className={`rounded-xl border p-4 ${softClass}`}>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div className={`font-semibold ${text}`}>运行目标</div>
-                  <div className={`text-xs mt-1 ${muted}`}>默认串行执行，保护 ADB 和设备稳定性。</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setSelectedDeviceIds(onlineDevices.map(device => device.id))} className={`px-3 py-2 text-xs rounded-lg border ${t.button.secondary}`}>全选</button>
-                  <button onClick={() => setSelectedDeviceIds([])} className={`px-3 py-2 text-xs rounded-lg border ${t.button.secondary}`}>清空</button>
-                  <button onClick={runScript} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium flex items-center gap-2">
-                    <Play size={15} />
-                    {draft.mode === 'stress' ? '开始压测' : '运行'}
-                  </button>
-                </div>
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {onlineDevices.length === 0 ? (
-                  <div className={`text-sm ${muted}`}>暂无在线设备</div>
-                ) : onlineDevices.map(device => {
-                  const selected = selectedDeviceIds.includes(device.id);
-                  return (
-                    <button
-                      key={device.id}
-                      onClick={() => toggleDevice(device.id)}
-                      className={`px-3 py-2 rounded-lg border text-sm flex items-center gap-2 transition-colors ${selected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}
-                    >
-                      <Smartphone size={14} />
-                      <span>{device.model || device.id}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {draft.mode === 'stress' && (
+            {editorMode === 'simple' ? (
+              <SimpleModePanel
+                draft={draft}
+                theme={t}
+                isDark={isDark}
+                softClass={softClass}
+                muted={muted}
+                text={text}
+                onlineDevices={onlineDevices}
+                selectedDeviceIds={selectedDeviceIds}
+                recorder={recorder}
+                saving={saving}
+                onApplyTemplate={applyQuickTemplate}
+                onDraftChange={(patch) => setDraft(prev => ({ ...prev, ...patch }))}
+                onToggleDevice={toggleDevice}
+                onSelectAllDevices={() => setSelectedDeviceIds(onlineDevices.map(device => device.id))}
+                onClearDevices={() => setSelectedDeviceIds([])}
+                onRun={runScript}
+                onSave={saveScript}
+                onRecorderChange={(patch) => setRecorder(prev => ({ ...prev, ...patch }))}
+                onRecorderRefresh={refreshRecorderSnapshot}
+                onRecord={recordAction}
+                onClearSteps={clearRecordedSteps}
+                onUpdateStep={updateStep}
+                onRemoveStep={removeStep}
+                onMoveStep={moveStep}
+                onOpenAdvanced={() => setEditorMode('advanced')}
+              />
+            ) : (
               <>
-                <StressConfig
-                  script={draft}
-                  isDark={isDark}
-                  softClass={softClass}
-                  onChange={(patch) => setDraft(prev => ({ ...prev, ...patch }))}
-                />
-                <StressRecorder
-                  recorder={recorder}
-                  onlineDevices={onlineDevices}
-                  isDark={isDark}
-                  softClass={softClass}
-                  onChange={(patch) => setRecorder(prev => ({ ...prev, ...patch }))}
-                  onRefresh={refreshRecorderSnapshot}
-                  onRecord={recordAction}
-                  onClearSteps={clearRecordedSteps}
-                />
+                <div className={`rounded-xl border p-4 ${softClass}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className={`font-semibold ${text}`}>运行目标</div>
+                      <div className={`text-xs mt-1 ${muted}`}>默认串行执行，保护 ADB 和设备稳定性。</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setSelectedDeviceIds(onlineDevices.map(device => device.id))} className={`px-3 py-2 text-xs rounded-lg border ${t.button.secondary}`}>全选</button>
+                      <button onClick={() => setSelectedDeviceIds([])} className={`px-3 py-2 text-xs rounded-lg border ${t.button.secondary}`}>清空</button>
+                      <button onClick={runScript} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium flex items-center gap-2">
+                        <Play size={15} />
+                        {draft.mode === 'stress' ? '开始压测' : '运行'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {onlineDevices.length === 0 ? (
+                      <div className={`text-sm ${muted}`}>暂无在线设备</div>
+                    ) : onlineDevices.map(device => {
+                      const selected = selectedDeviceIds.includes(device.id);
+                      return (
+                        <button
+                          key={device.id}
+                          onClick={() => toggleDevice(device.id)}
+                          className={`px-3 py-2 rounded-lg border text-sm flex items-center gap-2 transition-colors ${selected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}
+                        >
+                          <Smartphone size={14} />
+                          <span>{device.model || device.id}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {draft.mode === 'stress' && (
+                  <>
+                    <StressConfig
+                      script={draft}
+                      isDark={isDark}
+                      softClass={softClass}
+                      onChange={(patch) => setDraft(prev => ({ ...prev, ...patch }))}
+                    />
+                    <StressRecorder
+                      recorder={recorder}
+                      onlineDevices={onlineDevices}
+                      isDark={isDark}
+                      softClass={softClass}
+                      onChange={(patch) => setRecorder(prev => ({ ...prev, ...patch }))}
+                      onRefresh={refreshRecorderSnapshot}
+                      onRecord={recordAction}
+                      onClearSteps={clearRecordedSteps}
+                    />
+                  </>
+                )}
+
+                <div className={`rounded-xl border overflow-hidden ${softClass}`}>
+                  <div className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3 ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+                    <div>
+                      <div className={`font-semibold ${text}`}>步骤编排</div>
+                      <div className={`text-xs mt-1 ${muted}`}>{draft.steps.length} 个步骤</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {STEP_TYPES.map(type => {
+                        const Icon = type.icon;
+                        return (
+                          <button key={type.value} onClick={() => addStep(type.value)} className={`px-2.5 py-1.5 text-xs rounded-lg border flex items-center gap-1.5 ${t.button.secondary}`}>
+                            <Icon size={12} />
+                            {type.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="p-4 space-y-3">
+                    {draft.steps.length === 0 ? (
+                      <div className={`py-12 text-center text-sm ${muted}`}>添加一个步骤开始编排复现流程</div>
+                    ) : draft.steps.map((step, index) => (
+                      <StepEditor
+                        key={step.id}
+                        step={step}
+                        index={index}
+                        theme={t}
+                        isDark={isDark}
+                        onChange={(patch) => updateStep(index, patch)}
+                        onRemove={() => removeStep(index)}
+                        onMoveUp={() => moveStep(index, -1)}
+                        onMoveDown={() => moveStep(index, 1)}
+                      />
+                    ))}
+                  </div>
+                </div>
               </>
             )}
-
-            <div className={`rounded-xl border overflow-hidden ${softClass}`}>
-              <div className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3 ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
-                <div>
-                  <div className={`font-semibold ${text}`}>步骤编排</div>
-                  <div className={`text-xs mt-1 ${muted}`}>{draft.steps.length} 个步骤</div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {STEP_TYPES.map(type => {
-                    const Icon = type.icon;
-                    return (
-                      <button key={type.value} onClick={() => addStep(type.value)} className={`px-2.5 py-1.5 text-xs rounded-lg border flex items-center gap-1.5 ${t.button.secondary}`}>
-                        <Icon size={12} />
-                        {type.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="p-4 space-y-3">
-                {draft.steps.length === 0 ? (
-                  <div className={`py-12 text-center text-sm ${muted}`}>添加一个步骤开始编排复现流程</div>
-                ) : draft.steps.map((step, index) => (
-                  <StepEditor
-                    key={step.id}
-                    step={step}
-                    index={index}
-                    theme={t}
-                    isDark={isDark}
-                    onChange={(patch) => updateStep(index, patch)}
-                    onRemove={() => removeStep(index)}
-                    onMoveUp={() => moveStep(index, -1)}
-                    onMoveDown={() => moveStep(index, 1)}
-                  />
-                ))}
-              </div>
-            </div>
           </div>
         </section>
 
@@ -612,6 +713,233 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
         onCancel={() => setConfirmDialog(null)}
         onConfirm={runConfirmDialog}
       />
+    </div>
+  );
+}
+
+function SimpleModePanel({
+  draft,
+  theme,
+  isDark,
+  softClass,
+  muted,
+  text,
+  onlineDevices,
+  selectedDeviceIds,
+  recorder,
+  saving,
+  onApplyTemplate,
+  onDraftChange,
+  onToggleDevice,
+  onSelectAllDevices,
+  onClearDevices,
+  onRun,
+  onSave,
+  onRecorderChange,
+  onRecorderRefresh,
+  onRecord,
+  onClearSteps,
+  onUpdateStep,
+  onRemoveStep,
+  onMoveStep,
+  onOpenAdvanced
+}) {
+  const loop = draft.loop || {};
+  const acceptance = draft.acceptance || {};
+  const report = draft.report || {};
+  const launchStepIndex = (draft.steps || []).findIndex(step => step.type === 'shell' && /^monkey\s+-p\s+/i.test(step.command || ''));
+  const launchPackage = launchStepIndex >= 0 ? extractMonkeyPackage(draft.steps[launchStepIndex].command) : '';
+  const setLoop = (patch) => onDraftChange({ loop: { ...loop, ...patch } });
+  const setAcceptance = (patch) => onDraftChange({ acceptance: { ...acceptance, ...patch } });
+  const setReport = (patch) => onDraftChange({ report: { ...report, ...patch } });
+  const selectedCount = selectedDeviceIds.length;
+
+  const updateLaunchPackage = (value) => {
+    if (launchStepIndex < 0) return;
+    onUpdateStep(launchStepIndex, { command: value.trim() ? `monkey -p ${value.trim()} 1` : 'monkey -p com.example.app 1' });
+  };
+
+  return (
+    <>
+      <div className={`rounded-xl border p-4 ${softClass}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className={`font-semibold ${text}`}>选择场景</div>
+            <div className={`text-xs mt-1 ${muted}`}>从模板开始，后续可以录制补充步骤。</div>
+          </div>
+          <button type="button" onClick={onOpenAdvanced} className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 ${theme.button.secondary}`}>
+            <Terminal size={13} />
+            高级编排
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+          {QUICK_TEMPLATES.map(template => {
+            const Icon = template.icon;
+            return (
+              <button
+                key={template.id}
+                type="button"
+                onClick={() => onApplyTemplate(template.id)}
+                className={`rounded-xl border p-4 text-left transition-colors ${isDark ? 'border-[#3E4145] bg-[#202124] hover:bg-[#25272B]' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+              >
+                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
+                  <Icon size={18} />
+                </span>
+                <span className={`mt-3 block text-sm font-semibold ${text}`}>{template.title}</span>
+                <span className={`mt-1 block text-xs leading-relaxed ${muted}`}>{template.description}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className={`rounded-xl border p-4 ${softClass}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className={`font-semibold ${text}`}>运行设备</div>
+            <div className={`text-xs mt-1 ${muted}`}>已选择 {selectedCount} 台设备，默认串行运行。</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={onSelectAllDevices} className={`px-3 py-2 text-xs rounded-lg border ${theme.button.secondary}`}>全选</button>
+            <button type="button" onClick={onClearDevices} className={`px-3 py-2 text-xs rounded-lg border ${theme.button.secondary}`}>清空</button>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {onlineDevices.length === 0 ? (
+            <div className={`text-sm ${muted}`}>暂无在线设备</div>
+          ) : onlineDevices.map(device => {
+            const selected = selectedDeviceIds.includes(device.id);
+            return (
+              <button
+                key={device.id}
+                type="button"
+                onClick={() => onToggleDevice(device.id)}
+                className={`px-3 py-2 rounded-lg border text-sm flex items-center gap-2 transition-colors ${selected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}
+              >
+                <Smartphone size={14} />
+                <span>{device.model || device.id}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {launchStepIndex >= 0 && (
+        <div className={`rounded-xl border p-4 ${softClass}`}>
+          <div className={`font-semibold ${text}`}>应用启动设置</div>
+          <div className="mt-3 max-w-xl">
+            <TextField label="应用包名" value={launchPackage} onChange={updateLaunchPackage} placeholder="com.example.app" isDark={isDark} />
+          </div>
+        </div>
+      )}
+
+      <StressRecorder
+        recorder={recorder}
+        onlineDevices={onlineDevices}
+        isDark={isDark}
+        softClass={softClass}
+        simpleMode
+        onChange={onRecorderChange}
+        onRefresh={onRecorderRefresh}
+        onRecord={onRecord}
+        onClearSteps={onClearSteps}
+      />
+
+      <SimpleStepList
+        steps={draft.steps || []}
+        theme={theme}
+        isDark={isDark}
+        text={text}
+        muted={muted}
+        onUpdateStep={onUpdateStep}
+        onRemoveStep={onRemoveStep}
+        onMoveStep={onMoveStep}
+        onOpenAdvanced={onOpenAdvanced}
+      />
+
+      <div className={`rounded-xl border p-4 ${softClass}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className={`font-semibold ${text}`}>运行设置</div>
+            <div className={`text-xs mt-1 ${muted}`}>只保留常用选项，高级阈值和脚本参数可去高级编排调整。</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={onSave} disabled={saving} className={`px-4 py-2 rounded-lg border text-sm flex items-center gap-2 disabled:opacity-50 ${theme.button.secondary}`}>
+              {saving ? <RefreshCw size={15} className="animate-spin" /> : <Save size={15} />}
+              保存
+            </button>
+            <button type="button" onClick={onRun} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium flex items-center gap-2">
+              <Play size={15} />
+              开始运行
+            </button>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
+          <NumberField label="运行次数" value={loop.count ?? 1} onChange={(value) => setLoop({ count: value })} isDark={isDark} />
+          <NumberField label="最长时长(ms)" value={loop.durationMs ?? 0} onChange={(value) => setLoop({ durationMs: value })} isDark={isDark} />
+          <NumberField label="每轮间隔(ms)" value={loop.intervalMs ?? 1000} onChange={(value) => setLoop({ intervalMs: value })} isDark={isDark} />
+          <NumberField label="最低成功率(%)" value={acceptance.minSuccessRate ?? 100} onChange={(value) => setAcceptance({ minSuccessRate: value })} isDark={isDark} />
+        </div>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <CheckOption label="失败后继续" checked={loop.continueOnError !== false} onChange={(checked) => setLoop({ continueOnError: checked })} isDark={isDark} />
+          <CheckOption label="检测崩溃日志" checked={acceptance.failOnCrash !== false} onChange={(checked) => setAcceptance({ failOnCrash: checked })} isDark={isDark} />
+          <CheckOption label="检测 ANR 日志" checked={acceptance.failOnAnr !== false} onChange={(checked) => setAcceptance({ failOnAnr: checked })} isDark={isDark} />
+          <CheckOption label="生成 AI 分析" checked={report.includeAiSummary === true} onChange={(checked) => setReport({ includeAiSummary: checked })} isDark={isDark} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+function SimpleStepList({ steps, theme, isDark, text, muted, onUpdateStep, onRemoveStep, onMoveStep, onOpenAdvanced }) {
+  return (
+    <div className={`rounded-xl border overflow-hidden ${isDark ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
+      <div className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3 ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+        <div>
+          <div className={`font-semibold ${text}`}>已录制步骤</div>
+          <div className={`text-xs mt-1 ${muted}`}>{steps.length} 个步骤，默认按顺序执行。</div>
+        </div>
+        <button type="button" onClick={onOpenAdvanced} className={`px-3 py-2 rounded-lg border text-xs ${theme.button.secondary}`}>编辑高级字段</button>
+      </div>
+      <div className="p-4 space-y-2">
+        {steps.length === 0 ? (
+          <div className={`py-10 text-center text-sm ${muted}`}>选择模板或在设备画面上点击、拖拽，系统会自动生成步骤。</div>
+        ) : steps.map((step, index) => {
+          const summary = getStepSummary(step);
+          const Icon = summary.icon;
+          const simpleEditable = isSimpleEditableStep(step);
+          return (
+            <div key={step.id || index} className={`rounded-lg border p-3 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="h-8 w-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0">
+                  <Icon size={15} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <input
+                    value={step.label || summary.title}
+                    onChange={(event) => onUpdateStep(index, { label: event.target.value })}
+                    className={`w-full bg-transparent text-sm font-semibold outline-none ${text}`}
+                    placeholder={summary.title}
+                  />
+                  <div className={`mt-1 text-xs truncate ${muted}`}>{summary.detail}</div>
+                </div>
+                {step.critical === true && (
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-400">验收点</span>
+                )}
+                {!simpleEditable && (
+                  <span className={`rounded-full border px-2 py-1 text-[11px] ${isDark ? 'border-[#5F6368] text-[#9AA0A6]' : 'border-slate-200 text-slate-500'}`}>高级步骤</span>
+                )}
+                <button type="button" onClick={() => onUpdateStep(index, { critical: step.critical !== true })} className={`px-2 py-1.5 rounded-lg border text-xs ${theme.button.secondary}`}>验收点</button>
+                <button type="button" onClick={() => onMoveStep(index, -1)} className={`px-2 py-1.5 rounded-lg border text-xs ${theme.button.secondary}`}>上移</button>
+                <button type="button" onClick={() => onMoveStep(index, 1)} className={`px-2 py-1.5 rounded-lg border text-xs ${theme.button.secondary}`}>下移</button>
+                <button type="button" onClick={() => onRemoveStep(index)} className="p-2 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10" title="删除步骤">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -739,7 +1067,7 @@ function CheckOption({ label, checked, onChange, isDark }) {
   );
 }
 
-function StressRecorder({ recorder, onlineDevices, isDark, softClass, onChange, onRefresh, onRecord, onClearSteps }) {
+function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode = false, onChange, onRefresh, onRecord, onClearSteps }) {
   const selectedNode = recorder.nodes.find(node => String(node.index) === String(recorder.selectedNodeIndex));
   const text = isDark ? 'text-[#E8EAED]' : 'text-slate-800';
   const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
@@ -874,7 +1202,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, onChange, 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className={`font-semibold ${text}`}>录制回放</div>
-          <div className={`text-xs mt-1 ${muted}`}>读取设备 UI 层级，执行一次操作并追加为可回放步骤。</div>
+          <div className={`text-xs mt-1 ${muted}`}>{simpleMode ? '读取界面后，直接点击或拖拽设备画面生成步骤。' : '读取设备 UI 层级，执行一次操作并追加为可回放步骤。'}</div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {onlineDevices.map(device => {
@@ -977,8 +1305,14 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, onChange, 
           <div className={`rounded-lg border p-4 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
             <div className={`text-xs mb-2 ${muted}`}>选中控件</div>
             <div className={`text-base font-semibold break-words ${text}`}>{selectedNode?.label || '未选择控件'}</div>
-            <div className={`text-xs mt-1 break-all ${muted}`}>{selectedNode?.resourceId || selectedNode?.contentDesc || selectedNode?.className || selectedNode?.xpath || '-'}</div>
-            <div className={`text-[11px] mt-1 ${muted}`}>{selectedNode?.bounds || '-'}</div>
+            {simpleMode ? (
+              <div className={`text-xs mt-1 ${muted}`}>点击、等待和断言会自动保存控件信息；没有控件时使用坐标兜底。</div>
+            ) : (
+              <>
+                <div className={`text-xs mt-1 break-all ${muted}`}>{selectedNode?.resourceId || selectedNode?.contentDesc || selectedNode?.className || selectedNode?.xpath || '-'}</div>
+                <div className={`text-[11px] mt-1 ${muted}`}>{selectedNode?.bounds || '-'}</div>
+              </>
+            )}
             <div className="mt-4 grid grid-cols-3 gap-2">
               <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('tap')} className={recorderButtonClass(isDark)}>
                 <Smartphone size={13} />
@@ -995,7 +1329,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, onChange, 
             </div>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className={`grid gap-3 ${simpleMode ? 'lg:grid-cols-1' : 'lg:grid-cols-2'}`}>
             <div className={`rounded-lg border p-3 space-y-2 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
               <TextField label="输入文本" value={recorder.inputText} onChange={(value) => onChange({ inputText: value })} placeholder="输入到当前焦点" isDark={isDark} />
               <button disabled={!recorder.inputText || recorder.recording} onClick={() => onRecord('input', { text: recorder.inputText })} className={recorderButtonClass(isDark, true)}>
@@ -1004,13 +1338,15 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, onChange, 
               </button>
             </div>
 
-            <div className={`rounded-lg border p-3 space-y-2 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
-              <TextField label="KeyCode" value={recorder.keyCode} onChange={(value) => onChange({ keyCode: value })} placeholder="例如：66" isDark={isDark} />
-              <button disabled={!recorder.keyCode || recorder.recording} onClick={() => onRecord('keyevent', { keyCode: recorder.keyCode })} className={recorderButtonClass(isDark, true)}>
-                <Terminal size={13} />
-                按键并记录
-              </button>
-            </div>
+            {!simpleMode && (
+              <div className={`rounded-lg border p-3 space-y-2 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+                <TextField label="KeyCode" value={recorder.keyCode} onChange={(value) => onChange({ keyCode: value })} placeholder="例如：66" isDark={isDark} />
+                <button disabled={!recorder.keyCode || recorder.recording} onClick={() => onRecord('keyevent', { keyCode: recorder.keyCode })} className={recorderButtonClass(isDark, true)}>
+                  <Terminal size={13} />
+                  按键并记录
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1032,20 +1368,22 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, onChange, 
           <NumberField label="等待/断言超时(ms)" value={recorder.timeoutMs} onChange={(value) => onChange({ timeoutMs: value })} isDark={isDark} />
           <NumberField label="等待步骤(ms)" value={recorder.delayMs} onChange={(value) => onChange({ delayMs: value })} isDark={isDark} />
         </div>
-        <details className={`mt-4 rounded-lg border ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
-          <summary className={`cursor-pointer px-3 py-2 text-xs ${muted}`}>高级手动坐标</summary>
-          <div className="grid gap-3 p-3 sm:grid-cols-2 lg:grid-cols-5">
-            <NumberField label="起点X" value={recorder.swipe.x} onChange={(value) => onChange({ swipe: { ...recorder.swipe, x: value, points: [] } })} isDark={isDark} />
-            <NumberField label="起点Y" value={recorder.swipe.y} onChange={(value) => onChange({ swipe: { ...recorder.swipe, y: value, points: [] } })} isDark={isDark} />
-            <NumberField label="终点X" value={recorder.swipe.endX} onChange={(value) => onChange({ swipe: { ...recorder.swipe, endX: value, points: [] } })} isDark={isDark} />
-            <NumberField label="终点Y" value={recorder.swipe.endY} onChange={(value) => onChange({ swipe: { ...recorder.swipe, endY: value, points: [] } })} isDark={isDark} />
-            <NumberField label="滑动时长(ms)" value={recorder.swipe.durationMs} onChange={(value) => onChange({ swipe: { ...recorder.swipe, durationMs: value, points: [] } })} isDark={isDark} />
-            <button disabled={recorder.recording} onClick={() => onRecord('swipe', recorder.swipe)} className={`${recorderButtonClass(isDark, true)} lg:col-span-5`}>
-              <Smartphone size={13} />
-              按手动坐标滑动并记录
-            </button>
-          </div>
-        </details>
+        {!simpleMode && (
+          <details className={`mt-4 rounded-lg border ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+            <summary className={`cursor-pointer px-3 py-2 text-xs ${muted}`}>高级手动坐标</summary>
+            <div className="grid gap-3 p-3 sm:grid-cols-2 lg:grid-cols-5">
+              <NumberField label="起点X" value={recorder.swipe.x} onChange={(value) => onChange({ swipe: { ...recorder.swipe, x: value, points: [] } })} isDark={isDark} />
+              <NumberField label="起点Y" value={recorder.swipe.y} onChange={(value) => onChange({ swipe: { ...recorder.swipe, y: value, points: [] } })} isDark={isDark} />
+              <NumberField label="终点X" value={recorder.swipe.endX} onChange={(value) => onChange({ swipe: { ...recorder.swipe, endX: value, points: [] } })} isDark={isDark} />
+              <NumberField label="终点Y" value={recorder.swipe.endY} onChange={(value) => onChange({ swipe: { ...recorder.swipe, endY: value, points: [] } })} isDark={isDark} />
+              <NumberField label="滑动时长(ms)" value={recorder.swipe.durationMs} onChange={(value) => onChange({ swipe: { ...recorder.swipe, durationMs: value, points: [] } })} isDark={isDark} />
+              <button disabled={recorder.recording} onClick={() => onRecord('swipe', recorder.swipe)} className={`${recorderButtonClass(isDark, true)} lg:col-span-5`}>
+                <Smartphone size={13} />
+                按手动坐标滑动并记录
+              </button>
+            </div>
+          </details>
+        )}
       </div>
       {detachedPreview}
     </div>
@@ -1642,6 +1980,100 @@ function FieldLabel({ label, isDark }) {
 
 function fieldClass(isDark, extra = '') {
   return `w-full px-3 py-2 rounded-lg border text-sm outline-none focus:ring-2 focus:ring-emerald-500 ${isDark ? 'bg-[#2D2F33] border-[#5F6368] text-[#E8EAED] placeholder-slate-500' : 'bg-white border-slate-200 text-slate-700 placeholder-slate-400'} ${extra}`;
+}
+
+function createTemplateScript(templateId) {
+  const script = {
+    ...createEmptyScript(),
+    id: `script-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    mode: 'stress',
+    continueOnError: true,
+    loop: { count: 10, durationMs: 0, intervalMs: 1000, continueOnError: true },
+    acceptance: { minSuccessRate: 95, failOnCrash: true, failOnAnr: true, thresholds: { cpu: '', memory: '', batteryTemp: '', dataUsed: '' } },
+    report: { includeAiSummary: false, includePerformance: true }
+  };
+
+  if (templateId === 'launch') {
+    return {
+      ...script,
+      name: '启动应用稳定性压测',
+      description: '循环启动应用，采集截图和性能快照，用于验证启动稳定性。',
+      steps: [
+        { ...createStep('shell'), label: '启动应用', command: 'monkey -p com.example.app 1', timeoutMs: 15000, critical: true },
+        { ...createStep('delay'), label: '等待应用稳定', durationMs: 2000, timeoutMs: 5000 },
+        { ...createStep('screenshot'), label: '保存启动截图', timeoutMs: 30000 },
+        { ...createStep('perfSnapshot'), label: '采集性能快照', timeoutMs: 30000 }
+      ]
+    };
+  }
+
+  if (templateId === 'compare') {
+    return {
+      ...script,
+      name: '截图比对验收',
+      description: '采集当前画面并和基准图比对，用于验证页面显示是否稳定。',
+      steps: [
+        { ...createStep('screenshot'), label: '保存当前截图', timeoutMs: 30000 },
+        { ...createStep('imageCompare'), label: '截图比对验收', baselinePath: '', threshold: 98, timeoutMs: 30000, critical: true }
+      ]
+    };
+  }
+
+  return {
+    ...script,
+    name: '录制操作流程',
+    description: '读取设备界面后点击或拖拽录制，自动生成可回放步骤。',
+    steps: []
+  };
+}
+
+function getStepSummary(step) {
+  const target = getStepTargetText(step);
+  if (step.type === 'shell') return { title: step.label || '执行命令', detail: step.command || '未填写命令', icon: Terminal };
+  if (step.type === 'installApk') return { title: step.label || '安装 APK', detail: step.localPath || '未选择 APK', icon: Package };
+  if (step.type === 'pushFile') return { title: step.label || '推送文件', detail: `${step.localPath || '本地文件'} -> ${step.remotePath || '/sdcard/'}`, icon: Upload };
+  if (step.type === 'screenshot') return { title: step.label || '保存截图', detail: step.localPath || '保存到任务产物目录', icon: Camera };
+  if (step.type === 'imageCompare') return { title: step.label || '截图比对', detail: `${step.baselinePath || '未设置基准图'}，阈值 ${step.threshold || 98}%`, icon: Camera };
+  if (step.type === 'perfSnapshot') return { title: step.label || '采集性能快照', detail: '记录 CPU、内存、温度和存储空间', icon: Gauge };
+  if (step.type === 'tap') return { title: step.label || `点击 ${target}`, detail: target, icon: Smartphone };
+  if (step.type === 'swipe') return { title: step.label || '滑动屏幕', detail: getSwipeSummary(step), icon: Smartphone };
+  if (step.type === 'input') return { title: step.label || '输入文本', detail: step.text || '未填写输入文本', icon: Terminal };
+  if (step.type === 'keyevent') return { title: step.label || '发送按键', detail: `KeyCode ${step.keyCode || '-'}`, icon: Terminal };
+  if (step.type === 'waitText') return { title: step.label || `等待 ${target}`, detail: `最长等待 ${step.timeoutMs || 30000}ms`, icon: Clock3 };
+  if (step.type === 'assertText') return { title: step.label || `断言 ${target}`, detail: `校验界面存在 ${target}`, icon: CheckCircle2 };
+  if (step.type === 'inspection') return { title: step.label || '生成巡检摘要', detail: step.includeBugreport ? '包含 bugreport' : '基础巡检报告', icon: ClipboardList };
+  if (step.type === 'waitLog') return { title: step.label || '等待日志命中', detail: step.regex || step.keyword || '未填写关键词', icon: Search };
+  if (step.type === 'externalScript') return { title: step.label || '执行外部脚本', detail: step.scriptPath || step.command || '未选择脚本', icon: Terminal };
+  if (step.type === 'delay') return { title: step.label || '等待', detail: `${step.durationMs || 1000}ms`, icon: Clock3 };
+  return { title: step.label || '高级步骤', detail: getTypeLabel(step.type), icon: Terminal };
+}
+
+function getStepTargetText(step) {
+  if (step.text) return step.text;
+  if (step.textContains) return step.textContains;
+  if (step.contentDesc) return step.contentDesc;
+  if (step.resourceId) return step.resourceId;
+  if (step.className) return step.className;
+  if (step.xpath) return step.xpath;
+  if (step.x !== '' && step.y !== '' && step.x != null && step.y != null) return `坐标 ${step.x}, ${step.y}`;
+  return '目标控件';
+}
+
+function getSwipeSummary(step) {
+  const hasStart = step.x !== '' && step.y !== '' && step.x != null && step.y != null;
+  const hasEnd = step.endX !== '' && step.endY !== '' && step.endX != null && step.endY != null;
+  if (!hasStart || !hasEnd) return '未设置滑动坐标';
+  const curve = Array.isArray(step.points) && step.points.length > 2;
+  return `${curve ? '曲线' : '直线'} ${step.x},${step.y} -> ${step.endX},${step.endY}`;
+}
+
+function isSimpleEditableStep(step) {
+  return ['shell', 'screenshot', 'imageCompare', 'perfSnapshot', 'tap', 'swipe', 'input', 'waitText', 'assertText', 'delay', 'externalScript'].includes(step.type);
+}
+
+function extractMonkeyPackage(command) {
+  const match = String(command || '').match(/\bmonkey\s+-p\s+([^\s]+)\s+1\b/i);
+  return match?.[1] || '';
 }
 
 function createEmptyScript() {

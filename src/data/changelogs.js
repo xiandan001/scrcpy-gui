@@ -231,6 +231,16 @@ const CHANGELOGS = {
       { type: 'fix', text: '修复部分错误' }
     ]
   },
+  '3.7.1': {
+    title: 'v3.7.1',
+    date: '2026-06-25',
+    items: [
+      { type: 'feature', text: '新增任务中心普通模式：支持场景模板、录制流程和简化运行设置' },
+      { type: 'improve', text: '优化任务中心步骤展示，使用自然语言摘要降低脚本编排门槛' },
+      { type: 'improve', text: '优化用户体验' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
+  },
   '3.7.0': {
     title: 'v3.7.0',
     date: '2026-06-25',
