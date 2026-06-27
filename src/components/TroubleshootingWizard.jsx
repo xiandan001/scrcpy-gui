@@ -1,0 +1,542 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  ClipboardCheck,
+  FileText,
+  FolderOpen,
+  Loader2,
+  Lock,
+  Package,
+  Play,
+  Search,
+  ShieldAlert,
+  Smartphone,
+  Square,
+  Zap
+} from 'lucide-react';
+
+const ISSUE_OPTIONS = [
+  { id: 'crash', label: '应用闪退/崩溃', icon: ShieldAlert },
+  { id: 'freeze', label: '卡顿/无响应', icon: AlertCircle },
+  { id: 'install', label: '安装/启动失败', icon: Package },
+  { id: 'performance', label: '发热/性能异常', icon: Zap },
+  { id: 'connection', label: '设备连接异常', icon: Smartphone },
+  { id: 'generic', label: '通用问题排查', icon: Search }
+];
+
+const DEFAULT_STEPS = [
+  { id: 'device', label: '设备连接', status: 'pending', detail: '' },
+  { id: 'package', label: '应用信息', status: 'pending', detail: '' },
+  { id: 'performance', label: '性能快照', status: 'pending', detail: '' },
+  { id: 'logs', label: '关键日志', status: 'pending', detail: '' },
+  { id: 'inspection', label: '巡检证据', status: 'pending', detail: '' }
+];
+
+function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMemberCenter }) {
+  const t = theme;
+  const isDark = t.primary === 'tech';
+  const onlineDevices = useMemo(() => devices.filter(device => device.status === 'device'), [devices]);
+  const [deviceId, setDeviceId] = useState('');
+  const [issueType, setIssueType] = useState('crash');
+  const [packageName, setPackageName] = useState('');
+  const [packageSearch, setPackageSearch] = useState('');
+  const [packagePickerOpen, setPackagePickerOpen] = useState(false);
+  const [packageLoading, setPackageLoading] = useState(false);
+  const [packageError, setPackageError] = useState('');
+  const [packageItems, setPackageItems] = useState([]);
+  const [packageDeviceId, setPackageDeviceId] = useState('');
+  const [includeInspection, setIncludeInspection] = useState(true);
+  const [steps, setSteps] = useState(DEFAULT_STEPS);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const packagePickerRef = useRef(null);
+
+  const hasVip = vipStatus?.activated === true;
+  const isVipLoading = vipStatus?.reason === 'loading';
+  const selectedDeviceId = onlineDevices.some(device => device.id === deviceId) ? deviceId : onlineDevices[0]?.id || '';
+  const selectedDevice = onlineDevices.find(device => device.id === selectedDeviceId);
+  const text = isDark ? 'text-[#E8EAED]' : 'text-slate-800';
+  const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
+  const panel = isDark ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-white border-slate-200';
+  const soft = isDark ? 'bg-[#202124] border-[#3E4145]' : 'bg-slate-50 border-slate-200';
+  const input = isDark ? 'bg-[#202124] border-[#5F6368] text-[#E8EAED]' : 'bg-white border-slate-200 text-slate-700';
+
+  const filteredPackages = useMemo(() => {
+    const keyword = packageSearch.trim().toLowerCase();
+    if (!keyword) return packageItems.slice(0, 80);
+    return packageItems
+      .filter(item => {
+        const values = [item.packageName, item.apkName, item.path].map(value => String(value || '').toLowerCase());
+        return values.some(value => value.includes(keyword));
+      })
+      .slice(0, 80);
+  }, [packageItems, packageSearch]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onTroubleshootingProgress) return undefined;
+    const offProgress = window.electronAPI.onTroubleshootingProgress((event) => {
+      setRunning(event.status === 'running' || event.status === 'cancelling');
+      if (Array.isArray(event.steps)) setSteps(event.steps);
+    });
+    const offDone = window.electronAPI.onTroubleshootingDone((event) => {
+      setRunning(false);
+      if (Array.isArray(event.steps)) setSteps(event.steps);
+      setResult(event.result || null);
+      if (event.result?.ok) showToast?.('一键问题排查完成');
+      else if (event.result?.cancelled) showToast?.('一键问题排查已取消');
+      else showToast?.(`一键问题排查失败：${event.result?.error || '未知错误'}`);
+    });
+    window.electronAPI.troubleshootingState?.().then(res => {
+      const task = res?.task;
+      if (!task) return;
+      setRunning(task.status === 'running' || task.status === 'cancelling');
+      if (Array.isArray(task.steps)) setSteps(task.steps);
+      if (task.result) setResult(task.result);
+    });
+    return () => {
+      offProgress?.();
+      offDone?.();
+    };
+  }, [showToast]);
+
+  useEffect(() => {
+    if (!packageDeviceId || packageDeviceId === selectedDeviceId) return;
+    setPackagePickerOpen(false);
+    setPackageError('');
+  }, [packageDeviceId, selectedDeviceId]);
+
+  useEffect(() => {
+    if (!packagePickerOpen) return undefined;
+    const onMouseDown = (event) => {
+      if (packagePickerRef.current?.contains(event.target)) return;
+      setPackagePickerOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') setPackagePickerOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [packagePickerOpen]);
+
+  const startTroubleshooting = async () => {
+    if (!window.electronAPI?.troubleshootingStart) {
+      showToast?.('一键问题排查需要 Electron 环境');
+      return;
+    }
+    if (!selectedDeviceId) {
+      showToast?.('请先连接一台在线设备');
+      return;
+    }
+    setError('');
+    setResult(null);
+    setSteps(DEFAULT_STEPS);
+    setPackagePickerOpen(false);
+    setRunning(true);
+    const res = await window.electronAPI.troubleshootingStart({
+      deviceId: selectedDeviceId,
+      deviceLabel: selectedDevice?.model || selectedDevice?.name || selectedDeviceId,
+      issueType,
+      packageName: packageName.trim(),
+      includeInspection: hasVip && includeInspection
+    });
+    if (!res.ok) {
+      setRunning(false);
+      setError(res.error || '启动失败');
+      showToast?.(`一键问题排查启动失败：${res.error || '未知错误'}`);
+      return;
+    }
+    if (res.task?.steps) setSteps(res.task.steps);
+  };
+
+  const cancelTroubleshooting = async () => {
+    await window.electronAPI?.troubleshootingCancel?.();
+  };
+
+  const loadPackages = async () => {
+    const targetDeviceId = selectedDeviceId;
+    setPackageSearch(packageName.trim());
+    if (!targetDeviceId) {
+      setPackagePickerOpen(false);
+      showToast?.('请先选择在线设备');
+      return;
+    }
+    if (!window.electronAPI?.packageList) {
+      setPackagePickerOpen(false);
+      showToast?.('应用列表需要 Electron 环境');
+      return;
+    }
+    setPackagePickerOpen(true);
+    setPackageError('');
+    if (packageDeviceId === targetDeviceId && packageItems.length > 0) return;
+    setPackageLoading(true);
+    try {
+      const res = await window.electronAPI.packageList({ deviceId: targetDeviceId });
+      if (res?.ok) {
+        setPackageItems(res.packages || []);
+        setPackageDeviceId(targetDeviceId);
+      } else {
+        setPackageItems([]);
+        setPackageDeviceId('');
+        setPackageError(res?.error || '应用列表读取失败');
+      }
+    } catch (error) {
+      setPackageItems([]);
+      setPackageDeviceId('');
+      setPackageError(error.message || '应用列表读取失败');
+    } finally {
+      setPackageLoading(false);
+    }
+  };
+
+  const selectPackage = (item) => {
+    setPackageName(item.packageName || '');
+    setPackageSearch(item.packageName || '');
+    setPackagePickerOpen(false);
+  };
+
+  const openPath = async (targetPath) => {
+    if (!targetPath) return;
+    const res = await window.electronAPI?.troubleshootingOpenFolder?.(targetPath);
+    if (res && !res.ok) showToast?.(`打开失败：${res.error || '未知错误'}`);
+  };
+
+  const completedCount = steps.filter(step => ['success', 'failed', 'skipped'].includes(step.status)).length;
+  const progressPercent = Math.round(completedCount / steps.length * 100);
+
+  return (
+    <div className="space-y-5">
+      <section className={`rounded-xl border ${panel} overflow-hidden`}>
+        <div className={`px-5 py-4 border-b ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center">
+                <ClipboardCheck size={22} className="text-emerald-400" />
+              </div>
+              <div>
+                <h3 className={`text-lg font-semibold ${text}`}>一键问题排查</h3>
+                <p className={`text-xs mt-0.5 ${muted}`}>自动汇总设备、应用、性能、日志和巡检证据</p>
+              </div>
+            </div>
+            <div className={`text-xs px-3 py-1.5 rounded-full border ${soft}`}>
+              {running ? '排查中' : result ? '已有结果' : '待开始'}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-5 grid xl:grid-cols-[360px_1fr] gap-5">
+          <div className="space-y-4">
+            <div>
+              <FieldLabel label="在线设备" isDark={isDark} />
+              <select
+                value={selectedDeviceId}
+                onChange={(event) => {
+                  setDeviceId(event.target.value);
+                  setPackagePickerOpen(false);
+                  setPackageError('');
+                }}
+                disabled={running}
+                className={`w-full px-3 py-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 ${input}`}
+              >
+                {onlineDevices.length === 0 ? (
+                  <option value="">暂无在线设备</option>
+                ) : onlineDevices.map(device => (
+                  <option key={device.id} value={device.id}>{device.model || device.name || device.id}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <FieldLabel label="问题类型" isDark={isDark} />
+              <div className="grid grid-cols-2 gap-2">
+                {ISSUE_OPTIONS.map(option => {
+                  const Icon = option.icon;
+                  const active = issueType === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      disabled={running}
+                      onClick={() => setIssueType(option.id)}
+                      className={`min-h-[74px] rounded-lg border px-3 py-2 text-left transition-colors ${
+                        active
+                          ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300'
+                          : isDark ? 'border-[#3E4145] hover:bg-[#3E4145] text-[#E8EAED]' : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      <Icon size={17} className={active ? 'text-emerald-300' : muted} />
+                      <div className="text-xs font-medium mt-2 leading-snug">{option.label}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <FieldLabel label="目标包名" isDark={isDark} optional />
+              <div ref={packagePickerRef}>
+                <div className="flex gap-2">
+                  <input
+                    value={packageName}
+                    onChange={(event) => {
+                      setPackageName(event.target.value);
+                      setPackageSearch(event.target.value);
+                    }}
+                    onFocus={() => {
+                      if (packageItems.length > 0 && packageDeviceId === selectedDeviceId) setPackagePickerOpen(true);
+                    }}
+                    disabled={running}
+                    placeholder="com.example.app"
+                    className={`min-w-0 flex-1 px-3 py-2.5 border rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500 ${input}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={loadPackages}
+                    disabled={running || packageLoading}
+                    className={`shrink-0 px-3 py-2.5 rounded-lg border text-sm flex items-center justify-center gap-1.5 disabled:opacity-60 ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100'}`}
+                  >
+                    {packageLoading ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
+                    搜索
+                  </button>
+                </div>
+
+                {packagePickerOpen && (
+                  <div className={`mt-2 w-full rounded-lg border shadow-sm ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
+                    <div className={`border-b p-2 ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+                      <input
+                        autoFocus
+                        value={packageSearch}
+                        onChange={(event) => setPackageSearch(event.target.value)}
+                        placeholder="搜索包名或 APK 名"
+                        className={`w-full px-3 py-2 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 ${input}`}
+                      />
+                    </div>
+                    <div className="max-h-56 overflow-y-auto p-2">
+                      {packageLoading ? (
+                        <div className={`py-8 text-center text-sm ${muted}`}>
+                          <Loader2 size={18} className="mx-auto mb-2 animate-spin" />
+                          正在读取应用列表...
+                        </div>
+                      ) : packageError ? (
+                        <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                          {packageError}
+                        </div>
+                      ) : filteredPackages.length === 0 ? (
+                        <div className={`py-8 text-center text-sm ${muted}`}>未找到匹配应用</div>
+                      ) : filteredPackages.map(item => (
+                        <PackageOption
+                          key={item.packageName}
+                          item={item}
+                          isDark={isDark}
+                          onSelect={selectPackage}
+                        />
+                      ))}
+                    </div>
+                    <div className={`border-t px-3 py-2 flex items-center justify-between gap-2 text-xs ${isDark ? 'border-[#3E4145]' : 'border-slate-100'} ${muted}`}>
+                      <span>{packageItems.length > 0 ? `共 ${packageItems.length} 个应用` : '也可以直接手动输入包名'}</span>
+                      <button
+                        type="button"
+                        onClick={() => setPackagePickerOpen(false)}
+                        className={isDark ? 'text-[#E8EAED] hover:text-emerald-300' : 'text-slate-700 hover:text-emerald-600'}
+                      >
+                        收起
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <label className={`flex items-start gap-3 rounded-lg border p-3 ${soft}`}>
+              <input
+                type="checkbox"
+                checked={hasVip && includeInspection}
+                disabled={running || !hasVip}
+                onChange={(event) => setIncludeInspection(event.target.checked)}
+                className="mt-1 w-4 h-4 accent-emerald-500"
+              />
+              <span className="flex-1">
+                <span className={`block text-sm font-medium ${text}`}>包含巡检证据包</span>
+                <span className={`block text-xs mt-1 ${muted}`}>
+                  {hasVip ? '生成完整巡检报告和证据包' : isVipLoading ? '正在加载会员状态' : '会员版可用'}
+                </span>
+              </span>
+              {!hasVip && !isVipLoading && (
+                <button
+                  type="button"
+                  onClick={onOpenMemberCenter}
+                  className="text-xs text-amber-400 flex items-center gap-1"
+                >
+                  <Lock size={12} />会员
+                </button>
+              )}
+            </label>
+
+            <div className="flex gap-2">
+              {running ? (
+                <button
+                  type="button"
+                  onClick={cancelTroubleshooting}
+                  className="flex-1 px-4 py-2.5 rounded-lg bg-red-500 hover:bg-red-600 text-white font-medium flex items-center justify-center gap-2"
+                >
+                  <Square size={16} />取消排查
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={startTroubleshooting}
+                  disabled={!selectedDeviceId}
+                  className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-medium flex items-center justify-center gap-2"
+                >
+                  <Play size={16} />开始排查
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className={`rounded-xl border p-4 ${soft}`}>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className={`font-semibold ${text}`}>执行进度</div>
+                  <div className={`text-xs mt-1 ${muted}`}>{completedCount}/{steps.length} 项完成</div>
+                </div>
+                <div className={`text-sm font-semibold ${running ? 'text-emerald-400' : muted}`}>{progressPercent}%</div>
+              </div>
+              <div className={`h-2 rounded-full overflow-hidden mt-3 ${isDark ? 'bg-[#101214]' : 'bg-slate-200'}`}>
+                <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progressPercent}%` }} />
+              </div>
+            </div>
+
+            <div className="grid lg:grid-cols-5 gap-2">
+              {steps.map(step => (
+                <StepTile key={step.id} step={step} isDark={isDark} />
+              ))}
+            </div>
+
+            {error && (
+              <div className="rounded-lg border border-red-500/25 bg-red-500/10 text-red-400 px-4 py-3 text-sm flex items-start gap-2">
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            {result && (
+              <ResultPanel result={result} isDark={isDark} text={text} muted={muted} soft={soft} onOpenPath={openPath} />
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function StepTile({ step, isDark }) {
+  const statusClass = {
+    pending: isDark ? 'border-[#3E4145] bg-[#202124] text-[#9AA0A6]' : 'border-slate-200 bg-slate-50 text-slate-500',
+    running: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+    success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+    failed: 'border-red-500/30 bg-red-500/10 text-red-400',
+    skipped: 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+  }[step.status] || '';
+  return (
+    <div className={`rounded-lg border px-3 py-3 min-h-[92px] ${statusClass}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold">{step.label}</span>
+        {step.status === 'running' ? <Loader2 size={14} className="animate-spin" /> : step.status === 'success' ? <CheckCircle2 size={14} /> : step.status === 'failed' ? <AlertCircle size={14} /> : null}
+      </div>
+      <div className="text-[11px] leading-relaxed mt-2 line-clamp-2">{step.detail || statusText(step.status)}</div>
+    </div>
+  );
+}
+
+function ResultPanel({ result, isDark, text, muted, soft, onOpenPath }) {
+  const ok = result.ok && !result.cancelled;
+  return (
+    <div className={`rounded-xl border p-4 ${soft}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${ok ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
+            {ok ? <CheckCircle2 size={21} /> : <AlertCircle size={21} />}
+          </div>
+          <div>
+            <div className={`font-semibold ${text}`}>{result.title || (ok ? '排查完成' : '排查未完成')}</div>
+            <div className={`text-sm mt-1 ${muted}`}>{result.message || result.error || '已生成排查结果'}</div>
+          </div>
+        </div>
+        <div className={`px-2.5 py-1 rounded-full text-xs ${ok ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
+          {result.cancelled ? '已取消' : ok ? '完成' : '需关注'}
+        </div>
+      </div>
+
+      {Array.isArray(result.suggestions) && result.suggestions.length > 0 && (
+        <div className="mt-4">
+          <div className={`text-xs font-semibold mb-2 ${text}`}>建议</div>
+          <div className="space-y-1.5">
+            {result.suggestions.map((item, index) => (
+              <div key={`${item}-${index}`} className={`text-xs ${muted}`}>{index + 1}. {item}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {result.reportPath && (
+          <button onClick={() => onOpenPath(result.reportPath)} className={`px-3 py-2 rounded-lg border text-sm flex items-center gap-2 ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+            <FileText size={15} />打开报告
+          </button>
+        )}
+        {result.outputDir && (
+          <button onClick={() => onOpenPath(result.outputDir)} className={`px-3 py-2 rounded-lg border text-sm flex items-center gap-2 ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100'}`}>
+            <FolderOpen size={15} />打开目录
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PackageOption({ item, isDark, onSelect }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(item)}
+      className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${isDark ? 'hover:bg-[#2D2F33]' : 'hover:bg-slate-50'}`}
+    >
+      <div className="flex items-start gap-2">
+        <Package size={15} className={`mt-0.5 shrink-0 ${item.system ? 'text-slate-400' : 'text-emerald-400'}`} />
+        <div className="min-w-0 flex-1">
+          <div className={`truncate font-mono text-xs ${isDark ? 'text-[#E8EAED]' : 'text-slate-800'}`}>{item.packageName}</div>
+          <div className={`mt-1 truncate text-xs ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>{item.apkName || item.path || '应用'}</div>
+        </div>
+        {item.system && (
+          <span className="shrink-0 rounded bg-slate-500/10 px-1.5 py-0.5 text-[10px] text-slate-400">SYS</span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function FieldLabel({ label, isDark, optional }) {
+  return (
+    <div className={`text-xs font-medium mb-1.5 ${isDark ? 'text-[#BDC1C6]' : 'text-slate-600'}`}>
+      {label}{optional ? <span className="ml-1 opacity-60">可选</span> : null}
+    </div>
+  );
+}
+
+function statusText(status) {
+  if (status === 'pending') return '等待执行';
+  if (status === 'running') return '正在执行';
+  if (status === 'success') return '已完成';
+  if (status === 'failed') return '执行失败';
+  if (status === 'skipped') return '已跳过';
+  return '';
+}
+
+export default TroubleshootingWizard;

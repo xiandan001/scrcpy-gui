@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Clipboard, Download, Edit3, Lock, Plus, RefreshCw, RotateCcw, Save, SearchCheck, Trash2, Upload, X } from 'lucide-react';
+import DangerConfirmModal from './DangerConfirmModal';
 
 const EMPTY_RULE = {
   id: '',
@@ -26,6 +27,8 @@ function DiagnosticRuleLibrary({ theme, open, onClose, isVip, onVipRequired }) {
   const [testResult, setTestResult] = useState(null);
   const [transferText, setTransferText] = useState('');
   const [error, setError] = useState('');
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
 
   const sortedRules = useMemo(() => {
     return [...rules].sort((a, b) => Number(a.builtIn) - Number(b.builtIn) || a.label.localeCompare(b.label));
@@ -85,34 +88,59 @@ function DiagnosticRuleLibrary({ theme, open, onClose, isVip, onVipRequired }) {
       onVipRequired?.('删除自定义规则');
       return;
     }
-    if (!window.confirm('确定删除该规则吗？')) return;
-    setSaving(true);
-    try {
-      const res = await window.electronAPI.autoDiagnoseRulesDelete({ id: rule.id });
-      if (res.ok) setRules(res.rules || []);
-      else setError(res.error || '删除失败');
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
+    setConfirmDialog({
+      title: '删除诊断规则',
+      message: `确定删除「${rule.label}」吗？`,
+      detail: '删除后该规则不会再参与自动诊断；如需恢复，只能重新创建或导入规则备份。',
+      confirmLabel: '删除规则',
+      onConfirm: async () => {
+        setSaving(true);
+        try {
+          const res = await window.electronAPI.autoDiagnoseRulesDelete({ id: rule.id });
+          if (res.ok) setRules(res.rules || []);
+          else setError(res.error || '删除失败');
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setSaving(false);
+        }
+      }
+    });
   };
 
   const resetRules = async () => {
-    if (!window.confirm('确定重置诊断规则吗？')) return;
-    setSaving(true);
-    try {
-      const res = await window.electronAPI.autoDiagnoseRulesReset();
-      if (res.ok) {
-        setRules(res.rules || []);
-        setEditingRule(null);
-      } else {
-        setError(res.error || '重置失败');
+    setConfirmDialog({
+      title: '重置诊断规则',
+      message: '确定恢复默认诊断规则吗？',
+      detail: '重置会覆盖当前规则配置。建议先导出备份，再执行重置。',
+      confirmLabel: '重置规则',
+      onConfirm: async () => {
+        setSaving(true);
+        try {
+          const res = await window.electronAPI.autoDiagnoseRulesReset();
+          if (res.ok) {
+            setRules(res.rules || []);
+            setEditingRule(null);
+          } else {
+            setError(res.error || '重置失败');
+          }
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setSaving(false);
+        }
       }
-    } catch (err) {
-      setError(err.message);
+    });
+  };
+
+  const runConfirmDialog = async () => {
+    if (!confirmDialog?.onConfirm) return;
+    setConfirmLoading(true);
+    try {
+      const result = await confirmDialog.onConfirm();
+      if (result !== false) setConfirmDialog(null);
     } finally {
-      setSaving(false);
+      setConfirmLoading(false);
     }
   };
 
@@ -161,6 +189,18 @@ function DiagnosticRuleLibrary({ theme, open, onClose, isVip, onVipRequired }) {
   const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
 
   return (
+    <>
+    <DangerConfirmModal
+      open={!!confirmDialog}
+      theme={theme}
+      title={confirmDialog?.title}
+      message={confirmDialog?.message}
+      detail={confirmDialog?.detail}
+      confirmLabel={confirmDialog?.confirmLabel || '确定'}
+      loading={confirmLoading}
+      onCancel={() => setConfirmDialog(null)}
+      onConfirm={runConfirmDialog}
+    />
     <div className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div className={`w-full max-w-6xl max-h-[90vh] overflow-hidden rounded-xl border shadow-2xl ${panelBg}`} onClick={(e) => e.stopPropagation()}>
         <div className={`px-5 py-4 border-b flex items-center justify-between ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
@@ -278,6 +318,7 @@ function DiagnosticRuleLibrary({ theme, open, onClose, isVip, onVipRequired }) {
         )}
       </div>
     </div>
+    </>
   );
 }
 

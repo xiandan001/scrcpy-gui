@@ -231,6 +231,18 @@ const CHANGELOGS = {
       { type: 'fix', text: '修复部分错误' }
     ]
   },
+  '3.8.0': {
+    title: 'v3.8.0',
+    date: '2026-06-27',
+    items: [
+      { type: 'feature', text: '新增问题排查：支持按场景采集诊断证据并搜索选择目标包名' },
+      { type: 'feature', text: '新增环境自检弹窗：集中检查 ADB、scrcpy 和设备授权状态' },
+      { type: 'feature', text: '新增产物中心：集中查看问题排查、任务和分析产物' },
+      { type: 'improve', text: '优化偏好设置：支持自定义全局命令按键' },
+      { type: 'improve', text: '优化用户体验' },
+      { type: 'fix', text: '修复部分错误' }
+    ]
+  },
   '3.7.1': {
     title: 'v3.7.1',
     date: '2026-06-25',

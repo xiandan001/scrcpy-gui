@@ -594,6 +594,7 @@ function sendProgress(task, step, index, total, status, result) {
     task.progress = payload;
     lastTaskState = publicInspectionTask(task);
   }
+  if (task.silent) return;
   sendToSender(task, 'inspection:progress', payload);
 }
 
@@ -603,6 +604,7 @@ function sendDone(task, payload) {
     task.result = payload;
     lastTaskState = publicInspectionTask(task);
   }
+  if (task.silent) return;
   sendToSender(task, 'inspection:done', { taskId: task.id, deviceId: task.deviceId, ...payload });
 }
 

@@ -21,10 +21,13 @@ const smartSearch = require('./lib/smart-search.cjs');
 const vip = require('./lib/vip.cjs');
 // 设备巡检报告与证据包导出 IPC 模块
 const inspection = require('./lib/inspection.cjs');
+const troubleshooting = require('./lib/troubleshooting.cjs');
 // 管理增强：App 包管理与性能监控 IPC 模块
 const packageManager = require('./lib/package-manager.cjs');
 const performanceMonitor = require('./lib/performance-monitor.cjs');
 const taskCenter = require('./lib/task-center.cjs');
+const artifactCenter = require('./lib/artifact-center.cjs');
+const environmentCheck = require('./lib/environment-check.cjs');
 
 // 单实例锁定 - 确保只有一个应用实例在运行
 const gotTheLock = app.requestSingleInstanceLock();
@@ -99,9 +102,12 @@ app.whenReady().then(() => {
   vip.register(ipcMain);
   // 注册设备巡检报告、App 包管理与性能监控模块
   inspection.register(ipcMain);
+  troubleshooting.register(ipcMain);
   packageManager.register(ipcMain);
   performanceMonitor.register(ipcMain);
   taskCenter.register(ipcMain);
+  artifactCenter.register(ipcMain);
+  environmentCheck.register(ipcMain);
 
   vip.preload();
 
