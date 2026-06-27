@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
+  ChevronDown,
   ClipboardCheck,
   FileText,
   FolderOpen,
@@ -57,6 +60,16 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
   const isVipLoading = vipStatus?.reason === 'loading';
   const selectedDeviceId = onlineDevices.some(device => device.id === deviceId) ? deviceId : onlineDevices[0]?.id || '';
   const selectedDevice = onlineDevices.find(device => device.id === selectedDeviceId);
+  const deviceOptions = useMemo(() => {
+    if (onlineDevices.length === 0) {
+      return [{ value: '', label: '暂无在线设备', description: '请连接设备后刷新', disabled: true }];
+    }
+    return onlineDevices.map(device => ({
+      value: device.id,
+      label: device.model || device.name || device.id,
+      description: `${device.id} · 在线`
+    }));
+  }, [onlineDevices]);
   const text = isDark ? 'text-[#E8EAED]' : 'text-slate-800';
   const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
   const panel = isDark ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-white border-slate-200';
@@ -233,22 +246,17 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
           <div className="space-y-4">
             <div>
               <FieldLabel label="在线设备" isDark={isDark} />
-              <select
+              <DeviceSelect
                 value={selectedDeviceId}
-                onChange={(event) => {
-                  setDeviceId(event.target.value);
+                options={deviceOptions}
+                isDark={isDark}
+                disabled={running}
+                onChange={(value) => {
+                  setDeviceId(value);
                   setPackagePickerOpen(false);
                   setPackageError('');
                 }}
-                disabled={running}
-                className={`w-full px-3 py-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 ${input}`}
-              >
-                {onlineDevices.length === 0 ? (
-                  <option value="">暂无在线设备</option>
-                ) : onlineDevices.map(device => (
-                  <option key={device.id} value={device.id}>{device.model || device.name || device.id}</option>
-                ))}
-              </select>
+              />
             </div>
 
             <div>
@@ -501,6 +509,145 @@ function ResultPanel({ result, isDark, text, muted, soft, onOpenPath }) {
   );
 }
 
+function DeviceSelect({ value, options, isDark, disabled, onChange }) {
+  const rootRef = useRef(null);
+  const menuRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState(null);
+  const selectedIndex = Math.max(0, options.findIndex(option => option.value === value));
+  const selected = options[selectedIndex] || options[0] || { value: '', label: '暂无在线设备', description: '' };
+  const allDisabled = disabled || options.length === 0 || options.every(option => option.disabled);
+  const [activeIndex, setActiveIndex] = useState(selectedIndex);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const updatePosition = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const gap = 8;
+      const viewportHeight = window.innerHeight || 720;
+      const viewportWidth = window.innerWidth || 1024;
+      const width = Math.max(rect.width, 240);
+      const maxHeight = Math.min(320, viewportHeight - gap * 2);
+      const openUp = rect.bottom + maxHeight + gap > viewportHeight && rect.top > maxHeight;
+      const top = openUp
+        ? Math.max(gap, rect.top - maxHeight - gap)
+        : Math.min(viewportHeight - maxHeight - gap, rect.bottom + gap);
+      const left = Math.min(viewportWidth - width - gap, Math.max(gap, rect.left));
+      setMenuStyle({ top, left, width, maxHeight });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    setActiveIndex(selectedIndex);
+  }, [selectedIndex]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActiveIndex(prev => findEnabledIndex(options, prev, event.key === 'ArrowDown' ? 1 : -1));
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const option = options[activeIndex];
+        if (!option?.disabled) {
+          onChange(option.value);
+          setOpen(false);
+        }
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [activeIndex, onChange, open, options]);
+
+  const menu = open && menuStyle && typeof document !== 'undefined' ? createPortal(
+    <div
+      ref={menuRef}
+      role="listbox"
+      style={{
+        position: 'fixed',
+        top: menuStyle.top,
+        left: menuStyle.left,
+        width: menuStyle.width,
+        maxHeight: menuStyle.maxHeight
+      }}
+      className={`z-[120] overflow-y-auto rounded-xl border p-1.5 shadow-2xl ${isDark ? 'bg-[#202124] border-[#3E4145]' : 'bg-white border-slate-200'}`}
+    >
+      {options.map((option, index) => {
+        const selectedOption = option.value === value;
+        const active = index === activeIndex;
+        return (
+          <button
+            key={String(option.value)}
+            type="button"
+            role="option"
+            aria-selected={selectedOption}
+            disabled={option.disabled}
+            onMouseEnter={() => setActiveIndex(index)}
+            onClick={() => {
+              if (option.disabled) return;
+              onChange(option.value);
+              setOpen(false);
+            }}
+            className={`w-full rounded-lg px-3 py-2.5 text-left transition-colors flex items-start gap-3 disabled:cursor-not-allowed disabled:opacity-60 ${active && !option.disabled ? 'bg-emerald-500/10' : isDark ? 'hover:bg-[#2D2F33]' : 'hover:bg-slate-50'}`}
+          >
+            <span className={`mt-0.5 h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${selectedOption ? 'bg-emerald-500 text-white' : 'bg-emerald-500/10 text-emerald-400'}`}>
+              <Smartphone size={15} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className={`block truncate text-sm font-medium ${isDark ? 'text-[#E8EAED]' : 'text-slate-800'}`}>{option.label}</span>
+              {option.description && <span className={`block truncate text-xs mt-0.5 leading-snug ${isDark ? 'text-[#9AA0A6]' : 'text-slate-500'}`}>{option.description}</span>}
+            </span>
+            {selectedOption && <Check size={15} className="mt-1 text-emerald-400 shrink-0" />}
+          </button>
+        );
+      })}
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        disabled={allDisabled}
+        onClick={() => setOpen(prev => !prev)}
+        className={`w-full px-3 py-2.5 rounded-lg border text-sm transition-colors flex items-center justify-between gap-3 disabled:cursor-not-allowed disabled:opacity-60 ${isDark ? 'bg-[#202124] border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <Smartphone size={15} className="text-emerald-400 shrink-0" />
+          <span className="truncate">{selected.label}</span>
+        </span>
+        <ChevronDown size={15} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {menu}
+    </div>
+  );
+}
+
 function PackageOption({ item, isDark, onSelect }) {
   return (
     <button
@@ -520,6 +667,15 @@ function PackageOption({ item, isDark, onSelect }) {
       </div>
     </button>
   );
+}
+
+function findEnabledIndex(options, currentIndex, direction) {
+  if (options.length === 0) return 0;
+  for (let offset = 1; offset <= options.length; offset += 1) {
+    const nextIndex = (currentIndex + direction * offset + options.length) % options.length;
+    if (!options[nextIndex]?.disabled) return nextIndex;
+  }
+  return currentIndex;
 }
 
 function FieldLabel({ label, isDark, optional }) {
