@@ -24,6 +24,7 @@ import {
   Trash2,
   Upload
 } from 'lucide-react';
+import DangerConfirmModal from './DangerConfirmModal';
 
 function PackageManagerPanel({
   device,
@@ -61,6 +62,8 @@ function PackageManagerPanel({
   const [actionLoading, setActionLoading] = useState('');
   const [selectedPackageNames, setSelectedPackageNames] = useState(new Set());
   const [batchLoading, setBatchLoading] = useState('');
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
   const showToastRef = useRef(showToast);
 
   const isLoading = (key) => operationLoading?.[key];
@@ -151,6 +154,21 @@ function PackageManagerPanel({
     }
   };
 
+  const runConfirmDialog = async () => {
+    if (!confirmDialog?.onConfirm) return;
+    setConfirmLoading(true);
+    try {
+      const result = await confirmDialog.onConfirm();
+      if (result !== false) setConfirmDialog(null);
+    } finally {
+      setConfirmLoading(false);
+    }
+  };
+
+  const confirmPackageAction = (options, onConfirm) => {
+    setConfirmDialog({ ...options, onConfirm });
+  };
+
   const exportApk = async () => {
     if (!selectedPackage || !requireVip()) return;
     const result = await window.electronAPI.showSaveDialog({
@@ -218,33 +236,42 @@ function PackageManagerPanel({
     });
   };
 
-  const runBatchAction = async (action, label, confirmText) => {
+  const runBatchAction = async (action, label, confirmOptions) => {
     if (selectedCount === 0 || !requireVip()) return;
-    if (confirmText && !window.confirm(confirmText)) return;
     const selectedNames = Array.from(selectedPackageNames);
-    setBatchLoading(action);
-    try {
-      const res = await window.electronAPI.packageBatch({
-        deviceId: device.id,
-        action,
-        packageNames: selectedNames
-      });
-      if (res.ok) showToast?.(`${label}完成：${res.successCount}/${selectedCount}`);
-      else showToast?.(`${label}完成：成功 ${res.successCount || 0}，失败 ${res.failedCount || 0}`);
-      await loadPackages();
-      setSelectedPackageNames(new Set());
-      if (action === 'uninstall' && selectedPackage && selectedNames.includes(selectedPackage.packageName)) {
-        setSelectedPackage(null);
-        setDetail(null);
-        setPermissions([]);
-      } else if (selectedPackage) {
-        await selectPackage(selectedPackage);
+    const execute = async () => {
+      setBatchLoading(action);
+      try {
+        const res = await window.electronAPI.packageBatch({
+          deviceId: device.id,
+          action,
+          packageNames: selectedNames
+        });
+        if (res.ok) showToast?.(`${label}完成：${res.successCount}/${selectedCount}`);
+        else showToast?.(`${label}完成：成功 ${res.successCount || 0}，失败 ${res.failedCount || 0}`);
+        await loadPackages();
+        setSelectedPackageNames(new Set());
+        if (action === 'uninstall' && selectedPackage && selectedNames.includes(selectedPackage.packageName)) {
+          setSelectedPackage(null);
+          setDetail(null);
+          setPermissions([]);
+        } else if (selectedPackage) {
+          await selectPackage(selectedPackage);
+        }
+      } catch (error) {
+        showToast?.(`${label}异常：${error.message}`);
+      } finally {
+        setBatchLoading('');
       }
-    } catch (error) {
-      showToast?.(`${label}异常：${error.message}`);
-    } finally {
-      setBatchLoading('');
+    };
+    if (confirmOptions) {
+      confirmPackageAction(
+        typeof confirmOptions === 'string' ? { title: label, message: confirmOptions, confirmLabel: label } : confirmOptions,
+        execute
+      );
+      return;
     }
+    await execute();
   };
 
   const packageActionButton = (key, label, icon, onClick, tone = 'normal', vipRequired = true) => {
@@ -266,6 +293,20 @@ function PackageManagerPanel({
   };
 
   return (
+    <>
+    <DangerConfirmModal
+      open={!!confirmDialog}
+      theme={theme}
+      title={confirmDialog?.title}
+      message={confirmDialog?.message}
+      detail={confirmDialog?.detail}
+      bullets={confirmDialog?.bullets || []}
+      confirmLabel={confirmDialog?.confirmLabel || '确定'}
+      tone={confirmDialog?.tone || 'danger'}
+      loading={confirmLoading}
+      onCancel={() => setConfirmDialog(null)}
+      onConfirm={runConfirmDialog}
+    />
     <div className={`border-t p-4 ${isDark ? 'bg-slate-800/30' : 'bg-slate-50'}`}>
       <div className="flex items-center justify-between mb-4">
         <h4 className={`text-sm font-semibold flex items-center gap-2 ${t.text}`}>
@@ -474,10 +515,26 @@ function PackageManagerPanel({
               <div className={`mt-3 rounded-lg border px-3 py-2 flex flex-wrap items-center gap-2 ${isDark ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}>
                 <span className={`text-xs mr-auto ${isDark ? 'text-[#E8EAED]' : 'text-slate-700'}`}>已选 {selectedCount} 个应用</span>
                 <button type="button" onClick={() => runBatchAction('forceStop', '批量停止')} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'forceStop' ? <RefreshCw size={12} className="animate-spin" /> : <Power size={12} />}停止</button>
-                <button type="button" onClick={() => runBatchAction('clearData', '批量清数据', `确定清除 ${selectedCount} 个应用的数据吗？`)} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'clearData' ? <RefreshCw size={12} className="animate-spin" /> : <Database size={12} />}清数据</button>
-                <button type="button" onClick={() => runBatchAction('disable', '批量停用', `确定停用 ${selectedCount} 个应用吗？`)} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'disable' ? <RefreshCw size={12} className="animate-spin" /> : <EyeOff size={12} />}停用</button>
+                <button type="button" onClick={() => runBatchAction('clearData', '批量清数据', {
+                  title: '批量清除应用数据',
+                  message: `确定清除 ${selectedCount} 个应用的数据吗？`,
+                  detail: '清数据会删除应用本地账号、缓存和配置，无法从本工具直接恢复。',
+                  confirmLabel: '清除数据'
+                })} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'clearData' ? <RefreshCw size={12} className="animate-spin" /> : <Database size={12} />}清数据</button>
+                <button type="button" onClick={() => runBatchAction('disable', '批量停用', {
+                  title: '批量停用应用',
+                  message: `确定停用 ${selectedCount} 个应用吗？`,
+                  detail: '停用后应用不会正常启动。可在包管理中重新启用作为回滚。',
+                  confirmLabel: '停用应用',
+                  tone: 'warning'
+                })} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'disable' ? <RefreshCw size={12} className="animate-spin" /> : <EyeOff size={12} />}停用</button>
                 <button type="button" onClick={() => runBatchAction('enable', '批量启用')} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'enable' ? <RefreshCw size={12} className="animate-spin" /> : <Eye size={12} />}启用</button>
-                <button type="button" onClick={() => runBatchAction('uninstall', '批量卸载', `确定卸载 ${selectedCount} 个应用吗？`)} disabled={!!batchLoading} className="px-2.5 py-1.5 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs flex items-center gap-1 disabled:opacity-50">{batchLoading === 'uninstall' ? <RefreshCw size={12} className="animate-spin" /> : <Trash2 size={12} />}卸载</button>
+                <button type="button" onClick={() => runBatchAction('uninstall', '批量卸载', {
+                  title: '批量卸载应用',
+                  message: `确定卸载 ${selectedCount} 个应用吗？`,
+                  detail: '卸载会从当前用户移除应用。需要回退时请保留 APK，并重新安装对应版本。',
+                  confirmLabel: '卸载应用'
+                })} disabled={!!batchLoading} className="px-2.5 py-1.5 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs flex items-center gap-1 disabled:opacity-50">{batchLoading === 'uninstall' ? <RefreshCw size={12} className="animate-spin" /> : <Trash2 size={12} />}卸载</button>
               </div>
             )}
           </div>
@@ -561,9 +618,19 @@ function PackageManagerPanel({
                     {packageActionButton('permissions', '权限', <ShieldCheck size={13} />, loadPermissions)}
                     {packageActionButton('export', '导出', <Download size={13} />, exportApk)}
                     {packageActionButton('stop', '停止', <Power size={13} />, () => runPackageAction('stop', '强制停止', packageName => window.electronAPI.packageForceStop({ deviceId: device.id, packageName }), false))}
-                    {packageActionButton('clear', '清数据', <Database size={13} />, () => window.confirm('确定清除该应用数据吗？') && runPackageAction('clear', '清除数据', packageName => window.electronAPI.packageClearData({ deviceId: device.id, packageName })))}
+                    {packageActionButton('clear', '清数据', <Database size={13} />, () => confirmPackageAction({
+                      title: '清除应用数据',
+                      message: `确定清除 ${selectedPackage.packageName} 的应用数据吗？`,
+                      detail: '清数据会删除该应用本地账号、缓存和配置，无法从本工具直接恢复。',
+                      confirmLabel: '清除数据'
+                    }, () => runPackageAction('clear', '清除数据', packageName => window.electronAPI.packageClearData({ deviceId: device.id, packageName }))))}
                     {packageActionButton('disable', detail?.enabled === false ? '启用' : '停用', detail?.enabled === false ? <Eye size={13} /> : <EyeOff size={13} />, () => runPackageAction('disable', detail?.enabled === false ? '启用应用' : '停用应用', packageName => window.electronAPI.packageSetEnabled({ deviceId: device.id, packageName, enabled: detail?.enabled === false })))}
-                    {packageActionButton('uninstall', '卸载', <Trash2 size={13} />, () => window.confirm('确定卸载该应用吗？') && runPackageAction('uninstall', '卸载应用', packageName => window.electronAPI.packageUninstall({ deviceId: device.id, packageName })), 'danger')}
+                    {packageActionButton('uninstall', '卸载', <Trash2 size={13} />, () => confirmPackageAction({
+                      title: '卸载应用',
+                      message: `确定卸载 ${selectedPackage.packageName} 吗？`,
+                      detail: '卸载会从当前用户移除应用。需要回退时请保留 APK，并重新安装对应版本。',
+                      confirmLabel: '卸载应用'
+                    }, () => runPackageAction('uninstall', '卸载应用', packageName => window.electronAPI.packageUninstall({ deviceId: device.id, packageName }))), 'danger')}
                   </div>
 
                   {permissions.length > 0 && (
@@ -585,6 +652,7 @@ function PackageManagerPanel({
         </div>
       </div>
     </div>
+    </>
   );
 }
 

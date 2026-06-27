@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef, useMemo } from 'react';
 import { RefreshCw, Smartphone, Settings, Camera, RotateCcw, Wifi, Loader2, FolderOpen, Download, Folder, Package, Copy, X, Palette, History, Video, Bot, DownloadCloud, CheckCircle2, AlertCircle, Crown, Lock, ClipboardCheck, Gauge, ClipboardList } from 'lucide-react';
 import './index.css';
 import themes from './data/themes';
@@ -8,6 +8,12 @@ import MemberCenter from './components/MemberCenter';
 // 性能监控面板
 import PerformanceDashboard from './components/PerformanceDashboard';
 import TaskCenter from './components/TaskCenter';
+import TroubleshootingWizard from './components/TroubleshootingWizard';
+import ArtifactCenter from './components/ArtifactCenter';
+import EnvironmentCheckWizard from './components/EnvironmentCheckWizard';
+import GlobalCommandPalette, { GlobalCommandSettings } from './components/GlobalCommandPalette';
+import DangerConfirmModal from './components/DangerConfirmModal';
+import { isCommandShortcutMatch, normalizeCommandSettings } from './data/globalCommands';
 
 function App() {
   const [devices, setDevices] = useState([]);
@@ -39,11 +45,26 @@ function App() {
   }, []);
   // Confirm 确认框状态
   const [confirmModal, setConfirmModal] = useState(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
   // 更新安装确认框状态（带加载条）
   const [updateInstallModal, setUpdateInstallModal] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
-  const showConfirm = (message, onConfirm) => {
-    setConfirmModal({ message, onConfirm });
+  const [environmentCheckModalOpen, setEnvironmentCheckModalOpen] = useState(false);
+  const showConfirm = useCallback((options, onConfirm) => {
+    const next = typeof options === 'string'
+      ? { title: '确认操作', message: options, onConfirm }
+      : { ...options, onConfirm: options?.onConfirm || onConfirm };
+    setConfirmModal(next);
+  }, []);
+  const runConfirmModal = async () => {
+    if (!confirmModal?.onConfirm) return;
+    setConfirmLoading(true);
+    try {
+      const result = await confirmModal.onConfirm();
+      if (result !== false) setConfirmModal(null);
+    } finally {
+      setConfirmLoading(false);
+    }
   };
   // 截图保存路径
   const [screenshotPath, setScreenshotPath] = useState('');
@@ -93,12 +114,34 @@ function App() {
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(() => {
     return localStorage.getItem('autoUpdateEnabled') !== 'false';
   });
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [globalCommandSettings, setGlobalCommandSettings] = useState(() => {
+    try {
+      return normalizeCommandSettings(JSON.parse(localStorage.getItem('globalCommandSettings') || '{}'));
+    } catch {
+      return normalizeCommandSettings({});
+    }
+  });
   // 更新说明弹窗（版本升级后首次打开时显示）
   const [showChangelog, setShowChangelog] = useState(false);
   const [changelogContent, setChangelogContent] = useState(null);
   // appVersion 的 ref，供事件回调中读取最新值（避免闭包捕获旧值）
   const appVersionRef = useRef('');
   useEffect(() => { appVersionRef.current = appVersion; }, [appVersion]);
+  useEffect(() => {
+    localStorage.setItem('globalCommandSettings', JSON.stringify(globalCommandSettings));
+  }, [globalCommandSettings]);
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (!globalCommandSettings.enabled) return;
+      if (isCommandShortcutMatch(event, globalCommandSettings.shortcut)) {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [globalCommandSettings.enabled, globalCommandSettings.shortcut]);
   const [themeColors, setThemeColors] = useState({
     primary: 'emerald',
     primaryFrom: 'from-emerald-500',
@@ -251,6 +294,42 @@ function App() {
       setDevices([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const globalCommands = useMemo(() => {
+    const builtIns = [
+      { id: 'cmd-devices', title: '设备列表', description: '查看已连接设备', action: 'tab:devices', group: '导航' },
+      { id: 'cmd-environment', title: '环境自检', description: '检查 ADB、scrcpy 和设备授权', action: 'environmentCheck', group: '工具' },
+      { id: 'cmd-troubleshoot', title: '问题排查', description: '按问题场景自动采集证据', action: 'tab:troubleshoot', group: '导航' },
+      { id: 'cmd-artifacts', title: '产物中心', description: '查看报告、数据和证据目录', action: 'tab:artifacts', group: '导航' },
+      { id: 'cmd-history', title: '连接历史', description: '查看无线连接历史', action: 'tab:history', group: '导航' },
+      { id: 'cmd-tasks', title: '任务中心', description: '运行复现脚本和自动化压测', action: 'tab:tasks', group: '导航' },
+      { id: 'cmd-performance', title: '性能监控', description: '查看设备资源与进程状态', action: 'tab:performance', group: '导航' },
+      { id: 'cmd-settings', title: '偏好设置', description: '配置应用偏好', action: 'tab:settings', group: '导航' },
+      { id: 'cmd-log', title: '打开日志分析', description: '打开独立日志分析窗口', action: 'logAnalyzer', group: '工具' },
+      { id: 'cmd-refresh', title: '刷新设备', description: '重新获取设备列表', action: 'refreshDevices', group: '工具' }
+    ];
+    return [...builtIns, ...(globalCommandSettings.customCommands || [])];
+  }, [globalCommandSettings.customCommands]);
+
+  const runGlobalCommand = (command) => {
+    const action = String(command?.action || '');
+    if (action === 'environmentCheck' || action === 'tab:environment') {
+      setEnvironmentCheckModalOpen(true);
+      return;
+    }
+    if (action.startsWith('tab:')) {
+      setActiveTab(action.slice(4));
+      return;
+    }
+    if (action === 'logAnalyzer') {
+      window.electronAPI?.logAnalyzerOpen?.();
+      return;
+    }
+    if (action === 'refreshDevices') {
+      fetchDevices();
+      return;
     }
   };
 
@@ -709,11 +788,19 @@ function App() {
 
   // 清空终端命令历史记录
   const handleClearTerminalHistory = async () => {
-    setTerminalCommandHistory([]);
-    if (window.electronAPI) {
-      await window.electronAPI.clearTerminalHistory();
-    }
-    showToast('终端命令历史已清除');
+    showConfirm({
+      title: '清空终端命令历史',
+      message: '确定清空所有已保存的终端命令吗？',
+      detail: '该操作只清除本机命令历史，不影响当前终端输出和设备数据。',
+      confirmLabel: '清空历史',
+      onConfirm: async () => {
+        setTerminalCommandHistory([]);
+        if (window.electronAPI) {
+          await window.electronAPI.clearTerminalHistory();
+        }
+        showToast('终端命令历史已清除');
+      }
+    });
   };
 
   const handleScreenshot = async (deviceId) => {
@@ -751,85 +838,118 @@ function App() {
   };
 
   const handleReboot = async (deviceId) => {
-    setOperationLoading(prev => ({ ...prev, [`reboot_${deviceId}`]: true }));
-    try {
-      if (window.electronAPI) {
-        const res = await window.electronAPI.adbReboot(deviceId);
-        if (res.success) {
-          showToast('设备正在重启...');
-          setTimeout(() => fetchDevices(), 3000);
-        } else {
-          showToast(`重启失败: ${res.error}`);
+    showConfirm({
+      title: '重启设备',
+      message: `确定重启设备 ${deviceId} 吗？`,
+      detail: '重启会中断当前投屏、日志抓取和未完成的设备操作。设备重新上线后可刷新列表继续使用。',
+      confirmLabel: '重启设备',
+      onConfirm: async () => {
+        setOperationLoading(prev => ({ ...prev, [`reboot_${deviceId}`]: true }));
+        try {
+          if (window.electronAPI) {
+            const res = await window.electronAPI.adbReboot(deviceId);
+            if (res.success) {
+              showToast('设备正在重启...');
+              setTimeout(() => fetchDevices(), 3000);
+            } else {
+              showToast(`重启失败: ${res.error}`);
+            }
+          } else {
+            showToast('重启功能需要 Electron 环境');
+          }
+        } catch (err) {
+          showToast(`重启失败: ${err.message}`);
+        } finally {
+          setOperationLoading(prev => ({ ...prev, [`reboot_${deviceId}`]: false }));
         }
-      } else {
-        showToast('重启功能需要 Electron 环境');
       }
-    } catch (err) {
-      showToast(`重启失败: ${err.message}`);
-    } finally {
-      setOperationLoading(prev => ({ ...prev, [`reboot_${deviceId}`]: false }));
-    }
+    });
   };
 
   const handleRebootLoader = async (deviceId) => {
-    setOperationLoading(prev => ({ ...prev, [`loader_${deviceId}`]: true }));
-    try {
-      if (window.electronAPI) {
-        const res = await window.electronAPI.adbRebootLoader(deviceId);
-        if (res.success) {
-          showToast('设备正在进入loader模式...');
-          setTimeout(() => fetchDevices(), 3000);
-        } else {
-          showToast(`进入loader模式失败: ${res.error}`);
+    showConfirm({
+      title: '进入 Loader 模式',
+      message: `确定让设备 ${deviceId} 进入 loader 模式吗？`,
+      detail: '设备会断开当前 ADB 会话并进入刷机/引导模式；通常需要手动重启或刷机工具才能回到系统。',
+      confirmLabel: '进入 Loader',
+      onConfirm: async () => {
+        setOperationLoading(prev => ({ ...prev, [`loader_${deviceId}`]: true }));
+        try {
+          if (window.electronAPI) {
+            const res = await window.electronAPI.adbRebootLoader(deviceId);
+            if (res.success) {
+              showToast('设备正在进入loader模式...');
+              setTimeout(() => fetchDevices(), 3000);
+            } else {
+              showToast(`进入loader模式失败: ${res.error}`);
+            }
+          } else {
+            showToast('Loader模式需要 Electron 环境');
+          }
+        } catch (err) {
+          showToast(`进入loader模式失败: ${err.message}`);
+        } finally {
+          setOperationLoading(prev => ({ ...prev, [`loader_${deviceId}`]: false }));
         }
-      } else {
-        showToast('Loader模式需要 Electron 环境');
       }
-    } catch (err) {
-      showToast(`进入loader模式失败: ${err.message}`);
-    } finally {
-      setOperationLoading(prev => ({ ...prev, [`loader_${deviceId}`]: false }));
-    }
+    });
   };
 
   const handleRoot = async (deviceId) => {
-    setOperationLoading(prev => ({ ...prev, [`root_${deviceId}`]: true }));
-    try {
-      if (window.electronAPI) {
-        const res = await window.electronAPI.adbRoot(deviceId);
-        if (res.success) {
-          showToast(`Root 成功！${res.message}`);
-        } else {
-          showToast(`Root 失败: ${res.error}`);
+    showConfirm({
+      title: '执行 ADB Root',
+      message: `确定对设备 ${deviceId} 执行 root 吗？`,
+      detail: 'Root 会重启 adbd 并改变后续命令权限；如结果异常，可重启设备恢复普通会话。',
+      confirmLabel: '执行 Root',
+      tone: 'warning',
+      onConfirm: async () => {
+        setOperationLoading(prev => ({ ...prev, [`root_${deviceId}`]: true }));
+        try {
+          if (window.electronAPI) {
+            const res = await window.electronAPI.adbRoot(deviceId);
+            if (res.success) {
+              showToast(`Root 成功！${res.message}`);
+            } else {
+              showToast(`Root 失败: ${res.error}`);
+            }
+          } else {
+            showToast('Root 功能需要 Electron 环境');
+          }
+        } catch (err) {
+          showToast(`Root 执行失败: ${err.message}`);
+        } finally {
+          setOperationLoading(prev => ({ ...prev, [`root_${deviceId}`]: false }));
         }
-      } else {
-        showToast('Root 功能需要 Electron 环境');
       }
-    } catch (err) {
-      showToast(`Root 执行失败: ${err.message}`);
-    } finally {
-      setOperationLoading(prev => ({ ...prev, [`root_${deviceId}`]: false }));
-    }
+    });
   };
 
   const handleRemount = async (deviceId) => {
-    setOperationLoading(prev => ({ ...prev, [`remount_${deviceId}`]: true }));
-    try {
-      if (window.electronAPI) {
-        const res = await window.electronAPI.adbRemount(deviceId);
-        if (res.success) {
-          showToast(`Remount 成功！${res.message}`);
-        } else {
-          showToast(`Remount 失败: ${res.error}`);
+    showConfirm({
+      title: '重新挂载系统分区',
+      message: `确定对设备 ${deviceId} 执行 remount 吗？`,
+      detail: 'Remount 可能让系统分区变为可写，后续推送或命令会影响系统文件。建议只在明确需要修改系统分区时使用。',
+      confirmLabel: '执行 Remount',
+      onConfirm: async () => {
+        setOperationLoading(prev => ({ ...prev, [`remount_${deviceId}`]: true }));
+        try {
+          if (window.electronAPI) {
+            const res = await window.electronAPI.adbRemount(deviceId);
+            if (res.success) {
+              showToast(`Remount 成功！${res.message}`);
+            } else {
+              showToast(`Remount 失败: ${res.error}`);
+            }
+          } else {
+            showToast('Remount 功能需要 Electron 环境');
+          }
+        } catch (err) {
+          showToast(`Remount 执行失败: ${err.message}`);
+        } finally {
+          setOperationLoading(prev => ({ ...prev, [`remount_${deviceId}`]: false }));
         }
-      } else {
-        showToast('Remount 功能需要 Electron 环境');
       }
-    } catch (err) {
-      showToast(`Remount 执行失败: ${err.message}`);
-    } finally {
-      setOperationLoading(prev => ({ ...prev, [`remount_${deviceId}`]: false }));
-    }
+    });
   };
 
   const handleSelectApkFile = async (deviceId, forWhat) => {
@@ -874,23 +994,33 @@ function App() {
       showToast('请先选择一个 APK 文件');
       return;
     }
-    setOperationLoading(prev => ({ ...prev, [`install_${deviceId}`]: true }));
-    try {
-      if (window.electronAPI) {
-        const res = await window.electronAPI.adbInstall(deviceId, apkPath);
-        if (res.success) {
-          showToast(`安装成功！文件: ${apkPath}`);
-        } else {
-          showToast(`安装失败: ${res.error}`);
+    showConfirm({
+      title: '安装 APK',
+      message: `确定安装到设备 ${deviceId} 吗？`,
+      detail: '安装命令会使用覆盖/降级参数，可能替换设备上的现有应用。需要回退时请保留当前 APK 或重新安装旧版本。',
+      bullets: [apkPath],
+      confirmLabel: '安装 APK',
+      tone: 'warning',
+      onConfirm: async () => {
+        setOperationLoading(prev => ({ ...prev, [`install_${deviceId}`]: true }));
+        try {
+          if (window.electronAPI) {
+            const res = await window.electronAPI.adbInstall(deviceId, apkPath);
+            if (res.success) {
+              showToast(`安装成功！文件: ${apkPath}`);
+            } else {
+              showToast(`安装失败: ${res.error}`);
+            }
+          } else {
+            showToast('安装功能需要 Electron 环境');
+          }
+        } catch (err) {
+          showToast(`安装失败: ${err.message}`);
+        } finally {
+          setOperationLoading(prev => ({ ...prev, [`install_${deviceId}`]: false }));
         }
-      } else {
-        showToast('安装功能需要 Electron 环境');
       }
-    } catch (err) {
-      showToast(`安装失败: ${err.message}`);
-    } finally {
-      setOperationLoading(prev => ({ ...prev, [`install_${deviceId}`]: false }));
-    }
+    });
   };
 
   const handlePushApk = async (deviceId) => {
@@ -904,6 +1034,24 @@ function App() {
       showToast('请输入远程路径');
       return;
     }
+    const protectedPath = /^\/(system|system_ext|vendor|product|odm|data)\b/.test(remotePath.trim());
+    if (protectedPath) {
+      showConfirm({
+        title: '推送到敏感目录',
+        message: `确定推送文件到 ${remotePath} 吗？`,
+        detail: '该目录可能影响系统或应用数据。建议先确认目标路径和文件名；如需回退，请提前备份原文件。',
+        bullets: [localPath],
+        confirmLabel: '继续推送',
+        onConfirm: async () => {
+          await runPushFile(deviceId, localPath, remotePath);
+        }
+      });
+      return;
+    }
+    await runPushFile(deviceId, localPath, remotePath);
+  };
+
+  const runPushFile = async (deviceId, localPath, remotePath) => {
     setOperationLoading(prev => ({ ...prev, [`push_${deviceId}`]: true }));
     try {
       if (window.electronAPI) {
@@ -1028,21 +1176,29 @@ function App() {
   };
 
   const handleDisconnect = async (deviceId) => {
-    try {
-      if (window.electronAPI) {
-        const res = await window.electronAPI.adbDisconnect(deviceId);
-        if (res.success) {
-          fetchDevices();
-        } else {
-          showToast(`断开连接失败: ${res.error}`);
+    showConfirm({
+      title: '断开设备连接',
+      message: `确定断开设备 ${deviceId} 吗？`,
+      detail: '断开后当前投屏、文件操作和终端命令都会失去目标设备。可重新插拔 USB 或重新发起 Wi-Fi 连接恢复。',
+      confirmLabel: '断开连接',
+      onConfirm: async () => {
+        try {
+          if (window.electronAPI) {
+            const res = await window.electronAPI.adbDisconnect(deviceId);
+            if (res.success) {
+              fetchDevices();
+            } else {
+              showToast(`断开连接失败: ${res.error}`);
+            }
+          } else {
+            showToast(`模拟断开设备: ${deviceId}`);
+            fetchDevices();
+          }
+        } catch (err) {
+          showToast(`断开请求错误: ${err.message}`);
         }
-      } else {
-        showToast(`模拟断开设备: ${deviceId}`);
-        fetchDevices();
       }
-    } catch (err) {
-      showToast(`断开请求错误: ${err.message}`);
-    }
+    });
   };
 
   const handleDeviceNameChange = (deviceId, newName) => {
@@ -1067,6 +1223,13 @@ function App() {
           {toast}
         </div>
       )}
+      <GlobalCommandPalette
+        open={commandPaletteOpen}
+        commands={globalCommands}
+        theme={theme}
+        onClose={() => setCommandPaletteOpen(false)}
+        onRun={runGlobalCommand}
+      />
       {/* 更新说明弹窗（版本升级后首次打开时显示，放在顶层确保任何页面都能弹出） */}
       {showChangelog && changelogContent && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
@@ -1130,31 +1293,20 @@ function App() {
           </div>
         </div>
       )}
-      {/* Confirm 确认框 */}
-      {confirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className={`p-4 rounded-lg shadow-xl max-w-sm ${t.primary === 'tech' ? 'bg-[#2D2F33]' : 'bg-white'}`}>
-            <p className={`mb-4 text-sm ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-700'}`}>{confirmModal.message}</p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmModal(null)}
-                className={`px-4 py-2 text-sm rounded-lg transition-colors ${t.primary === 'tech' ? 'bg-[#3E4145] text-[#E8EAED] hover:bg-slate-600' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
-              >
-                取消
-              </button>
-              <button
-                onClick={() => {
-                  confirmModal.onConfirm();
-                  setConfirmModal(null);
-                }}
-                className="px-4 py-2 text-sm rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors"
-              >
-                确定
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DangerConfirmModal
+        open={!!confirmModal}
+        theme={theme}
+        title={confirmModal?.title}
+        message={confirmModal?.message}
+        detail={confirmModal?.detail}
+        bullets={confirmModal?.bullets || []}
+        confirmLabel={confirmModal?.confirmLabel || '确定'}
+        cancelLabel={confirmModal?.cancelLabel || '取消'}
+        tone={confirmModal?.tone || 'danger'}
+        loading={confirmLoading}
+        onCancel={() => setConfirmModal(null)}
+        onConfirm={runConfirmModal}
+      />
 
       {/* 更新安装确认对话框（带加载条） */}
       {updateInstallModal && (
@@ -1216,6 +1368,44 @@ function App() {
           </div>
         </div>
       )}
+      {environmentCheckModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
+          onClick={() => setEnvironmentCheckModalOpen(false)}
+        >
+          <div
+            className={`flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border shadow-2xl ${t.primary === 'tech' ? 'bg-[#202124] border-[#3E4145]' : 'bg-slate-50 border-slate-200'}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className={`flex items-center justify-between gap-4 border-b px-6 py-4 ${t.primary === 'tech' ? 'border-[#3E4145]' : 'border-slate-200'}`}>
+              <div>
+                <h3 className={`text-lg font-semibold ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
+                  环境自检
+                </h3>
+                <p className={`mt-1 text-sm ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'}`}>
+                  检查 ADB、scrcpy 和设备授权状态
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEnvironmentCheckModalOpen(false)}
+                className={`rounded-lg p-2 transition-colors ${t.primary === 'tech' ? 'text-[#9AA0A6] hover:bg-[#3E4145] hover:text-[#E8EAED]' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-700'}`}
+                aria-label="关闭环境自检"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <EnvironmentCheckWizard
+                devices={devices}
+                theme={theme}
+                showToast={showToast}
+                onRefreshDevices={fetchDevices}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       {/* Sidebar */}
       <div className={`w-72 flex flex-col pt-8 bg-[#202124] text-[#E8EAED]`}>
         <div className={`px-6 mb-8 flex items-center space-x-3 ${t.primary === 'cyan' || t.primary === 'blue' ? 'text-cyan-400' : t.primary === 'pink' ? 'text-pink-400' : t.primary === 'green' ? 'text-green-400' : t.primary === 'orange' ? 'text-orange-400' : 'text-emerald-400'}`}>
@@ -1231,6 +1421,22 @@ function App() {
           >
             <Smartphone size={20} />
             <span className="font-medium">设备列表</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('troubleshoot')}
+            className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'troubleshoot' ? `${t.primary === 'cyan' || t.primary === 'blue' ? 'bg-cyan-500/20 text-cyan-400' : t.primary === 'pink' ? 'bg-pink-500/20 text-pink-400' : t.primary === 'green' ? 'bg-green-500/20 text-green-400' : t.primary === 'orange' ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400'}` : 'hover:bg-[#2D2F33]'}`}
+            style={{ WebkitAppRegion: 'no-drag' }}
+          >
+            <ClipboardCheck size={20} />
+            <span className="font-medium">问题排查</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('artifacts')}
+            className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'artifacts' ? `${t.primary === 'cyan' || t.primary === 'blue' ? 'bg-cyan-500/20 text-cyan-400' : t.primary === 'pink' ? 'bg-pink-500/20 text-pink-400' : t.primary === 'green' ? 'bg-green-500/20 text-green-400' : t.primary === 'orange' ? 'bg-orange-500/20 text-orange-400' : 'bg-emerald-500/20 text-emerald-400'}` : 'hover:bg-[#2D2F33]'}`}
+            style={{ WebkitAppRegion: 'no-drag' }}
+          >
+            <FolderOpen size={20} />
+            <span className="font-medium">产物中心</span>
           </button>
           <button
             onClick={() => setActiveTab('history')}
@@ -1323,22 +1529,32 @@ function App() {
           <div>
             {/* 性能监控 Tab 标题与描述 */}
             <h2 className={`text-2xl font-bold ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>
-              {activeTab === 'devices' ? '已连接设备' : activeTab === 'history' ? '连接历史' : activeTab === 'tasks' ? '任务中心' : activeTab === 'performance' ? '性能监控' : activeTab === 'member' ? '会员中心' : '全局设置'}
+              {activeTab === 'devices' ? '已连接设备' : activeTab === 'troubleshoot' ? '问题排查' : activeTab === 'artifacts' ? '产物中心' : activeTab === 'history' ? '连接历史' : activeTab === 'tasks' ? '任务中心' : activeTab === 'performance' ? '性能监控' : activeTab === 'member' ? '会员中心' : '全局设置'}
             </h2>
             <p className={`text-sm mt-1 ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'}`}>
-              {activeTab === 'devices' ? '管理并投屏您的 Android 设备' : activeTab === 'history' ? '查看无线连接历史记录' : activeTab === 'tasks' ? '编排复现脚本并批量运行到多台设备' : activeTab === 'performance' ? '观察设备资源与进程状态' : activeTab === 'member' ? '管理您的会员权益与激活' : '配置 Scrcpy 及 ADB 相关偏好'}
+              {activeTab === 'devices' ? '管理并投屏您的 Android 设备' : activeTab === 'troubleshoot' ? '按问题场景自动采集诊断证据' : activeTab === 'artifacts' ? '集中查看报告、数据和证据目录' : activeTab === 'history' ? '查看无线连接历史记录' : activeTab === 'tasks' ? '编排复现脚本并批量运行到多台设备' : activeTab === 'performance' ? '观察设备资源与进程状态' : activeTab === 'member' ? '管理您的会员权益与激活' : '配置 Scrcpy 及 ADB 相关偏好'}
             </p>
           </div>
 
           {activeTab === 'devices' && (
-            <button
-              onClick={fetchDevices}
-              disabled={loading}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 ${t.button.primary.split(' ')[0]} ${t.button.primary.split(' ')[1] || ''}`}
-            >
-              <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
-              <span>刷新</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setEnvironmentCheckModalOpen(true)}
+                className={`flex items-center space-x-2 rounded-lg border px-4 py-2 font-medium transition-colors ${t.primary === 'tech' ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-100'}`}
+              >
+                <ClipboardCheck size={18} />
+                <span>环境自检</span>
+              </button>
+              <button
+                onClick={fetchDevices}
+                disabled={loading}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 ${t.button.primary.split(' ')[0]} ${t.button.primary.split(' ')[1] || ''}`}
+              >
+                <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+                <span>刷新</span>
+              </button>
+            </div>
           )}
         </header>
 
@@ -1465,6 +1681,23 @@ function App() {
                 )}
               </div>
             </>
+          )}
+
+          {activeTab === 'troubleshoot' && (
+            <TroubleshootingWizard
+              devices={devices}
+              theme={theme}
+              vipStatus={vipStatus}
+              showToast={showToast}
+              onOpenMemberCenter={() => setActiveTab('member')}
+            />
+          )}
+
+          {activeTab === 'artifacts' && (
+            <ArtifactCenter
+              theme={theme}
+              showToast={showToast}
+            />
           )}
 
           {activeTab === 'history' && (
@@ -1615,6 +1848,12 @@ function App() {
 
           {activeTab === 'settings' && (
             <div className={`w-full p-6 rounded-xl border shadow-sm ${t.primary === 'tech' ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200'}`}>
+              <GlobalCommandSettings
+                settings={globalCommandSettings}
+                theme={theme}
+                onChange={setGlobalCommandSettings}
+              />
+
               <h3 className={`text-lg font-semibold mb-4 ${t.primary === 'tech' ? 'text-[#E8EAED]' : 'text-slate-800'}`}>Scrcpy 投屏设置</h3>
               <p className={`text-sm mb-6 ${t.primary === 'tech' ? 'text-[#9AA0A6]' : 'text-[#80868B]'}`}>这些设置将在启动新的投屏会话时应用。</p>
 

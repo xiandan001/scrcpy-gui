@@ -70,6 +70,34 @@ const QUICK_TEMPLATES = [
     action: 'template'
   },
   {
+    id: 'install-launch',
+    title: '安装后启动验证',
+    description: '安装 APK、清理日志、启动应用并采集首屏与性能证据。',
+    icon: Package,
+    action: 'template'
+  },
+  {
+    id: 'crash-capture',
+    title: '崩溃复现采集',
+    description: '清空日志后启动应用，等待崩溃或 ANR 关键词并保留证据。',
+    icon: AlertCircle,
+    action: 'template'
+  },
+  {
+    id: 'smoke',
+    title: '基础冒烟检查',
+    description: '读取设备状态、返回桌面、截图并生成巡检摘要。',
+    icon: CheckCircle2,
+    action: 'template'
+  },
+  {
+    id: 'performance-watch',
+    title: '性能观察模板',
+    description: '循环启动目标应用，间隔采集性能快照和页面截图。',
+    icon: Gauge,
+    action: 'template'
+  },
+  {
     id: 'external',
     title: '导入外部脚本',
     description: '导入现有 Python、bat、Maestro、Appium 或自定义脚本。',
@@ -191,6 +219,10 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
     if (templateId === 'record') showToast?.('已创建录制流程，选择设备后读取界面即可开始');
     if (templateId === 'launch') showToast?.('已创建启动应用压测模板，请先填写应用包名');
     if (templateId === 'compare') showToast?.('已创建截图比对模板，请设置基准图后运行');
+    if (templateId === 'install-launch') showToast?.('已创建安装后启动验证模板，请先选择 APK 并填写包名');
+    if (templateId === 'crash-capture') showToast?.('已创建崩溃复现采集模板，请填写目标应用包名');
+    if (templateId === 'smoke') showToast?.('已创建基础冒烟检查模板，可直接选择设备运行');
+    if (templateId === 'performance-watch') showToast?.('已创建性能观察模板，请填写目标应用包名');
   };
 
   const saveScript = async () => {
@@ -363,8 +395,20 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   };
 
   const clearRecordedSteps = () => {
-    if (!window.confirm('确定清空当前脚本步骤吗？')) return;
-    setDraft(prev => ({ ...prev, steps: [] }));
+    const stepCount = draft.steps?.length || 0;
+    if (stepCount === 0) return;
+    setConfirmDialog({
+      title: '清空脚本步骤',
+      message: '确定清空当前脚本步骤吗？',
+      detail: `当前 ${stepCount} 个步骤会从草稿中移除；如果脚本尚未保存，关闭页面后无法恢复。`,
+      confirmLabel: '清空步骤',
+      icon: AlertCircle,
+      onConfirm: () => {
+        setDraft(prev => ({ ...prev, steps: [] }));
+        showToast?.('脚本步骤已清空');
+        return true;
+      }
+    });
   };
 
   const cancelTask = async (taskId) => {
@@ -2015,6 +2059,81 @@ function createTemplateScript(templateId) {
       steps: [
         { ...createStep('screenshot'), label: '保存当前截图', timeoutMs: 30000 },
         { ...createStep('imageCompare'), label: '截图比对验收', baselinePath: '', threshold: 98, timeoutMs: 30000, critical: true }
+      ]
+    };
+  }
+
+  if (templateId === 'install-launch') {
+    return {
+      ...script,
+      name: '安装后启动验证',
+      description: '安装 APK 后清理日志并启动应用，自动采集首屏截图和性能快照。',
+      loop: { ...script.loop, count: 1, intervalMs: 1000 },
+      acceptance: { ...script.acceptance, minSuccessRate: 100 },
+      steps: [
+        { ...createStep('installApk'), label: '安装 APK', localPath: '', timeoutMs: 120000, critical: true },
+        { ...createStep('shell'), label: '清理历史日志', command: 'logcat -c', timeoutMs: 10000 },
+        { ...createStep('shell'), label: '启动应用', command: 'monkey -p com.example.app 1', timeoutMs: 15000, critical: true },
+        { ...createStep('delay'), label: '等待首屏稳定', durationMs: 2500, timeoutMs: 5000 },
+        { ...createStep('screenshot'), label: '保存首屏截图', timeoutMs: 30000 },
+        { ...createStep('perfSnapshot'), label: '采集启动后性能', timeoutMs: 30000 }
+      ]
+    };
+  }
+
+  if (templateId === 'crash-capture') {
+    return {
+      ...script,
+      name: '崩溃复现采集',
+      description: '清理日志后启动应用，等待崩溃或 ANR 日志命中，并生成基础巡检摘要。',
+      loop: { ...script.loop, count: 1, intervalMs: 1000 },
+      acceptance: { ...script.acceptance, minSuccessRate: 100, failOnCrash: true, failOnAnr: true },
+      steps: [
+        { ...createStep('shell'), label: '清理历史日志', command: 'logcat -c', timeoutMs: 10000 },
+        { ...createStep('shell'), label: '启动应用', command: 'monkey -p com.example.app 1', timeoutMs: 15000, critical: true },
+        { ...createStep('delay'), label: '等待复现场景', durationMs: 3000, timeoutMs: 5000 },
+        { ...createStep('waitLog'), label: '等待崩溃或 ANR 日志', regex: 'FATAL EXCEPTION|ANR in|Application Not Responding', intervalMs: 2000, timeoutMs: 60000, critical: true },
+        { ...createStep('screenshot'), label: '保存现场截图', timeoutMs: 30000 },
+        { ...createStep('inspection'), label: '生成基础巡检摘要', includeBugreport: false, includeAiSummary: false, timeoutMs: 120000 }
+      ]
+    };
+  }
+
+  if (templateId === 'smoke') {
+    return {
+      ...script,
+      name: '基础冒烟检查',
+      description: '快速读取设备基础状态，返回桌面后采集截图、性能快照和巡检摘要。',
+      loop: { ...script.loop, count: 1, intervalMs: 1000 },
+      acceptance: { ...script.acceptance, minSuccessRate: 100 },
+      steps: [
+        { ...createStep('shell'), label: '读取设备型号', command: 'getprop ro.product.model', timeoutMs: 10000, critical: true },
+        { ...createStep('shell'), label: '读取系统版本', command: 'getprop ro.build.version.release', timeoutMs: 10000 },
+        { ...createStep('shell'), label: '返回桌面', command: 'input keyevent HOME', timeoutMs: 10000 },
+        { ...createStep('delay'), label: '等待桌面稳定', durationMs: 1500, timeoutMs: 5000 },
+        { ...createStep('screenshot'), label: '保存桌面截图', timeoutMs: 30000 },
+        { ...createStep('perfSnapshot'), label: '采集基础性能', timeoutMs: 30000 },
+        { ...createStep('inspection'), label: '生成基础巡检摘要', includeBugreport: false, includeAiSummary: false, timeoutMs: 120000 }
+      ]
+    };
+  }
+
+  if (templateId === 'performance-watch') {
+    return {
+      ...script,
+      name: '性能观察模板',
+      description: '循环启动目标应用并采集性能快照和截图，用于观察长时间使用后的资源变化。',
+      loop: { ...script.loop, count: 20, intervalMs: 3000, continueOnError: true },
+      acceptance: {
+        ...script.acceptance,
+        minSuccessRate: 95,
+        thresholds: { cpu: 85, memory: '', batteryTemp: 50, dataUsed: '' }
+      },
+      steps: [
+        { ...createStep('shell'), label: '启动应用', command: 'monkey -p com.example.app 1', timeoutMs: 15000, critical: true },
+        { ...createStep('delay'), label: '等待应用稳定', durationMs: 3000, timeoutMs: 5000 },
+        { ...createStep('perfSnapshot'), label: '采集性能快照', timeoutMs: 30000 },
+        { ...createStep('screenshot'), label: '保存观察截图', timeoutMs: 30000 }
       ]
     };
   }

@@ -254,6 +254,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('inspection:done', listener);
     return () => ipcRenderer.off('inspection:done', listener);
   },
+  // 一键问题排查向导
+  troubleshootingStart: (args) => ipcRenderer.invoke('troubleshooting:start', args),
+  troubleshootingCancel: () => ipcRenderer.invoke('troubleshooting:cancel'),
+  troubleshootingState: () => ipcRenderer.invoke('troubleshooting:state'),
+  troubleshootingOpenFolder: (folderPath) => ipcRenderer.invoke('troubleshooting:openFolder', folderPath),
+  onTroubleshootingProgress: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('troubleshooting:progress', listener);
+    return () => ipcRenderer.off('troubleshooting:progress', listener);
+  },
+  onTroubleshootingDone: (callback) => {
+    const listener = safeListener(callback);
+    ipcRenderer.on('troubleshooting:done', listener);
+    return () => ipcRenderer.off('troubleshooting:done', listener);
+  },
   // 任务中心：复现脚本、多设备批量任务和运行历史
   taskScriptsList: () => ipcRenderer.invoke('task-center:scripts:list'),
   taskScriptSave: (args) => ipcRenderer.invoke('task-center:scripts:save', args),
@@ -271,5 +286,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = safeListener(callback);
     ipcRenderer.on('task-center:update', listener);
     return () => ipcRenderer.off('task-center:update', listener);
-  }
+  },
+  // 报告/产物中心
+  artifactsList: () => ipcRenderer.invoke('artifacts:list'),
+  artifactOpenPath: (targetPath) => ipcRenderer.invoke('artifacts:openPath', targetPath),
+  // 设备连接与环境自检
+  envCheckRun: (args) => ipcRenderer.invoke('env-check:run', args),
+  envCheckRestartAdb: () => ipcRenderer.invoke('env-check:restartAdb')
 });
