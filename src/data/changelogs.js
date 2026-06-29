@@ -2,6 +2,15 @@
 // 格式：{ title, date, items: [{ type: 'feature'|'fix'|'improve', text }] }
 // type 对应不同颜色标签：feature(绿色新增) fix(红色修复) improve(蓝色优化)
 const CHANGELOGS = {
+  '3.8.1': {
+    title: 'v3.8.1',
+    date: '2026-06-29',
+    items: [
+      { type: 'feature', text: '终端新增 ROOT 模式开关：自动检测设备提权方式（su/adb root），命令自动以 root 身份执行' },
+      { type: 'fix', text: '修复终端执行交互式命令（如 su）一直"执行中"无法中断的问题' },
+      { type: 'improve', text: '优化用户体验' }
+    ]
+  },
   '2.0.0': {
     title: 'v2.0.0 重大更新',
     date: '2026-06-18',

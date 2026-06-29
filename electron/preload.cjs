@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDevices: () => ipcRenderer.invoke('adb:getDevices'),
   startScrcpy: (deviceId, settings) => ipcRenderer.invoke('scrcpy:start', { deviceId, settings }),
   adbShell: (deviceId, command) => ipcRenderer.invoke('adb:shell', { deviceId, command }),
+  adbShellCancel: (deviceId) => ipcRenderer.invoke('adb:shell:cancel', { deviceId }),
   adbScreenshot: (deviceId, localPath) => ipcRenderer.invoke('adb:screenshot', { deviceId, localPath }),
   adbScreenRecordStart: (deviceId, remotePath) => ipcRenderer.invoke('adb:screenrecord:start', { deviceId, remotePath }),
   adbScreenRecordStop: (deviceId, localPath) => ipcRenderer.invoke('adb:screenrecord:stop', { deviceId, localPath }),

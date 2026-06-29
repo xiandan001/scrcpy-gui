@@ -762,9 +762,15 @@ function App() {
         const res = await window.electronAPI.adbShell(deviceId, command);
         if (res.success) {
           return res.output || '命令执行成功';
-        } else {
-          return `命令执行失败: ${res.error}`;
         }
+        if (res.cancelled) {
+          return res.output ? `（已中断）\n${res.output}` : '命令已中断';
+        }
+        // 失败/超时但已有部分输出时一并展示，便于查看交互式命令的回显
+        if (res.output) {
+          return `${res.error}\n${res.output}`;
+        }
+        return `命令执行失败: ${res.error}`;
       } else {
         return '终端功能需要 Electron 环境';
       }

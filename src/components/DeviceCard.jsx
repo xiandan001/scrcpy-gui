@@ -6,6 +6,8 @@ import ControlButton from './ControlButton';
 import InspectionPanel from './InspectionPanel';
 // App 包管理增强面板
 import PackageManagerPanel from './PackageManagerPanel';
+// 通用危险确认弹窗（用于 su 不支持等提醒）
+import DangerConfirmModal from './DangerConfirmModal';
 
 function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onScreenshot, onScreenRecordStart, onScreenRecordStop, onReboot, onRebootLoader, onRoot, onRemount, onDisconnect, showApkManager, onApkManager, onSelectApkForInstall, onSelectApkForPush, onInstallApk, onPushApk, onBrowsePath, onPullFile, onPushPathChange, showToast, apkInstallPath, apkPushPath, apkPushRemotePath, pushRemotePathHistory, apkBrowserPath, apkBrowserItems, apkBrowserLoading, operationLoading, onExecuteCommand, theme, sharedCommandHistory, onSaveTerminalCommand, onClearTerminalHistory, vipStatus, inspectionPath, onInspectionPathChange, onOpenMemberCenter }) {
   const isOnline = device.status === 'device';
@@ -20,6 +22,13 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
   const [terminalCommand, setTerminalCommand] = useState('');
   const [terminalOutput, setTerminalOutput] = useState([]);
   const [isExecuting, setIsExecuting] = useState(false);
+  // SU 提权模式：开启后命令以 root 身份执行
+  const [suMode, setSuMode] = useState(false);
+  // 提权策略：'direct'=adb root 已生效（命令本身是 root）；'su'=需 su -c 包装
+  const [suStrategy, setSuStrategy] = useState('none');
+  const [suChecking, setSuChecking] = useState(false);
+  // su 不支持时的提醒弹窗
+  const [suUnsupportedOpen, setSuUnsupportedOpen] = useState(false);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [showHistory, setShowHistory] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -50,23 +59,91 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
 
     setIsExecuting(true);
     setShowHistory(false);
-    const cmd = terminalCommand.trim();
-    setTerminalOutput(prev => [...prev, { type: 'command', text: `$ adb -s ${device.id} shell "${cmd}"` }]);
+    const rawCmd = terminalCommand.trim();
+    // 根据当前提权策略包装命令（direct 策略下无需包装，shell 已是 root）
+    // 用单引号包裹内部命令，避免与 adb shell 外层传递时的双引号嵌套冲突
+    const escaped = rawCmd.replace(/'/g, "'\\''");
+    const finalCmd = !suMode ? rawCmd
+      : suStrategy === 'su-c' ? `su -c '${escaped}'`
+      : suStrategy === 'su-sh' ? `su 0 sh -c '${escaped}'`
+      : rawCmd;
+    setTerminalOutput(prev => [...prev, { type: 'command', text: `${suMode ? '#' : '$'} adb -s ${device.id} shell "${finalCmd}"` }]);
     setTerminalCommand('');
     setHistoryIndex(-1);
     if (onSaveTerminalCommand) {
-      onSaveTerminalCommand(cmd);
+      onSaveTerminalCommand(rawCmd);
     }
 
     try {
       if (onExecuteCommand) {
-        const result = await onExecuteCommand(device.id, cmd);
+        const result = await onExecuteCommand(device.id, finalCmd);
         setTerminalOutput(prev => [...prev, { type: 'output', text: result }]);
       }
     } catch (err) {
       setTerminalOutput(prev => [...prev, { type: 'error', text: `Error: ${err.message}` }]);
     } finally {
       setIsExecuting(false);
+    }
+  };
+
+  // 检测设备是否支持提权，返回策略：
+  //  'su-c'   = 标准 su -c（Magisk/AOSP）
+  //  'su-sh'  = busybox/toybox su（不识别 -c，需 su 0 sh -c）
+  //  'direct' = adb root 已生效，shell 本身是 root（su 不可用时的兜底）
+  //  'none'   = 不支持
+  // 用户主动开启 SU，优先使用 su 包装；仅当 su 不可用时才回退 direct
+  const checkSuSupported = async () => {
+    const MARK = '__SU_OK__';
+    // 1. 标准 su -c（用单引号包裹命令，与实际执行一致）
+    try {
+      const r1 = await window.electronAPI.adbShell(device.id, `su -c 'echo ${MARK}'`);
+      if (r1?.output?.includes(MARK)) {
+        return { supported: true, strategy: 'su-c' };
+      }
+    } catch {}
+    // 2. 兼容 busybox/toybox：su 不识别 -c，改用 su 0 sh -c
+    try {
+      const r2 = await window.electronAPI.adbShell(device.id, `su 0 sh -c 'echo ${MARK}'`);
+      if (r2?.output?.includes(MARK)) {
+        return { supported: true, strategy: 'su-sh' };
+      }
+    } catch {}
+    // 3. 兜底：adb root 已生效（id 直接是 root），无需 su 包装
+    try {
+      const idRes = await window.electronAPI.adbShell(device.id, 'id');
+      if (/uid=0/.test(idRes?.output || '')) {
+        return { supported: true, strategy: 'direct' };
+      }
+    } catch {}
+    return { supported: false, strategy: 'none' };
+  };
+
+  // 切换 SU 模式：关→开时先静默检测，支持才开启，否则弹窗提醒
+  const toggleSuMode = async () => {
+    if (suMode) {
+      setSuMode(false);
+      return;
+    }
+    if (!isOnline) return;
+    setSuChecking(true);
+    const { supported, strategy } = await checkSuSupported();
+    setSuChecking(false);
+    if (supported) {
+      setSuStrategy(strategy);
+      setSuMode(true);
+    } else {
+      setSuUnsupportedOpen(true);
+    }
+  };
+
+  // 中断当前正在执行的命令（如 su 等交互式命令挂起时可手动停止）
+  const handleCancelExecute = async () => {
+    try {
+      if (window.electronAPI?.adbShellCancel) {
+        await window.electronAPI.adbShellCancel(device.id);
+      }
+    } catch (e) {
+      // 主进程回调会自动 resolve 执行中的 Promise，忽略中断请求异常
     }
   };
 
@@ -130,6 +207,12 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [terminalFullscreen]);
+
+  // 终端有新输出时自动滚动到底部
+  useEffect(() => {
+    const el = terminalOutputRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [terminalOutput, isExecuting]);
 
   const clearTerminal = () => {
     setTerminalOutput([]);
@@ -722,7 +805,7 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
 
           {/* Terminal Input */}
           <form onSubmit={handleTerminalSubmit} className="flex items-center gap-2">
-            <span className="text-emerald-400 font-mono text-sm">$</span>
+            <span className={`font-mono text-sm transition-colors ${suMode ? 'text-red-400' : 'text-emerald-400'}`} title={suMode ? 'ROOT 模式' : '普通模式'}>{suMode ? '#' : '$'}</span>
             <div className="flex-1 relative">
               <input
                 type="text"
@@ -732,9 +815,24 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
                 onFocus={handleTerminalFocus}
                 onBlur={handleTerminalBlur}
                 disabled={isExecuting || !isOnline}
-                placeholder="输入 ADB Shell 命令..."
-                className={`w-full px-3 py-2 border rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 placeholder-slate-500 disabled:opacity-50 ${t.terminal.bg.replace('bg-', 'bg-').replace('gradient-to-br', 'bg-').includes('gradient') ? 'bg-[#2D2F33] border-[#3E4145] text-[#E8EAED]' : t.terminal.text.includes('300') ? 'bg-[#2D2F33] border-[#3E4145] text-[#E8EAED]' : 'bg-[#202124] border-[#3E4145] text-[#E8EAED]'}`}
+                placeholder={suMode ? '以 ROOT 身份执行命令...' : '输入 ADB Shell 命令...'}
+                className={`w-full px-3 py-2 pr-16 border rounded-lg font-mono text-sm focus:outline-none focus:ring-2 ${suMode ? 'focus:ring-red-500 focus:border-red-500' : 'focus:ring-emerald-500 focus:border-emerald-500'} placeholder-slate-500 disabled:opacity-50 ${t.terminal.bg.replace('bg-', 'bg-').replace('gradient-to-br', 'bg-').includes('gradient') ? 'bg-[#2D2F33] border-[#3E4145] text-[#E8EAED]' : t.terminal.text.includes('300') ? 'bg-[#2D2F33] border-[#3E4145] text-[#E8EAED]' : 'bg-[#202124] border-[#3E4145] text-[#E8EAED]'}`}
               />
+              {/* SU 模式开关：紧凑胶囊，内嵌输入框右侧，不额外占行 */}
+              <button
+                type="button"
+                onClick={toggleSuMode}
+                disabled={!isOnline || isExecuting || suChecking}
+                title={suMode ? '已开启 ROOT 模式，点击关闭' : '开启 ROOT 模式'}
+                className={`absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border transition-all disabled:opacity-40 ${
+                  suMode
+                    ? 'bg-red-500/20 text-red-400 border-red-500/40 shadow-[0_0_8px_-2px] shadow-red-500/40'
+                    : 'bg-[#3E4145]/60 text-slate-400 border-[#5F6368] hover:text-red-400 hover:border-red-500/40'
+                }`}
+              >
+                {suChecking ? <Loader2 size={10} className="animate-spin" /> : <Shield size={10} />}
+                SU
+              </button>
               {showHistory && commandHistory.length > 0 && (
                 <div className="absolute bottom-full left-0 right-0 mb-1 bg-[#2D2F33] border border-[#3E4145] rounded-lg overflow-hidden shadow-lg max-h-40 overflow-y-auto z-50">
                   <div className="px-3 py-1 text-xs text-slate-500 border-b border-[#3E4145] flex items-center justify-between">
@@ -757,18 +855,26 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
                 </div>
               )}
             </div>
-            <button
-              type="submit"
-              disabled={isExecuting || !terminalCommand.trim() || !isOnline}
-              className={`${t.button.primary.split(' ')[0]} ${t.button.primary.split(' ')[1] || ''} px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 disabled:opacity-50`}
-            >
-              {isExecuting ? (
-                <RefreshCw size={14} className="animate-spin" />
-              ) : (
+            {isExecuting ? (
+              <button
+                type="button"
+                onClick={handleCancelExecute}
+                title="中断当前命令"
+                className="px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30"
+              >
+                <X size={14} />
+                停止
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!terminalCommand.trim() || !isOnline}
+                className={`${t.button.primary.split(' ')[0]} ${t.button.primary.split(' ')[1] || ''} px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 disabled:opacity-50`}
+              >
                 <Send size={14} />
-              )}
-              执行
-            </button>
+                执行
+              </button>
+            )}
           </form>
 
           {/* Quick Commands */}
@@ -799,6 +905,24 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
         onClose={() => setShowInspection(false)}
         onOpenMemberCenter={onOpenMemberCenter}
         showToast={showToast}
+      />
+      {/* SU 不支持提醒：设备未获取 root 权限或未授权 su */}
+      <DangerConfirmModal
+        open={suUnsupportedOpen}
+        theme={t}
+        title="设备暂不支持 su 命令"
+        message="检测到当前设备无法以 root 身份执行命令，可能原因："
+        bullets={[
+          '设备未 Root 或未安装权限管理（如 Magisk）',
+          '已 Root 但未给 ADB Shell 授权',
+          '使用了受限用户版本的系统镜像'
+        ]}
+        detail="请先完成 Root 并在设备端授权后，再开启 ROOT 模式。"
+        confirmLabel="知道了"
+        cancelLabel="关闭"
+        tone="warning"
+        onCancel={() => setSuUnsupportedOpen(false)}
+        onConfirm={() => setSuUnsupportedOpen(false)}
       />
     </div>
   );

@@ -134,6 +134,8 @@ app.on('before-quit', async (event) => {
   performanceMonitor.cleanup();
   // 取消任务中心仍在执行的复现脚本，避免退出后残留 ADB 子进程。
   taskCenter.cleanup();
+  // 终止终端中未结束的 shell 命令（如挂起的 su）
+  adb.stopAllShellProcs();
   // 停止所有录屏进程（如果有）
   if (adb.hasActiveScreenRecords()) {
     event.preventDefault();

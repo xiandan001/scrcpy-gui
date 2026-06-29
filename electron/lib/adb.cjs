@@ -7,6 +7,12 @@ const { runCommand, checkCommandExists, findScrcpyPath } = require('./commands.c
 // ScreenRecord: Android native screen recording via adb shell screenrecord
 const screenRecordProcs = new Map();
 
+// 终端 shell 执行：记录运行中的进程，支持主动中断
+// key: requestId, value: { proc, deviceId, timer, settle }
+const shellProcs = new Map();
+// 交互式命令（su/sh/top 等）不会自然退出，设置兜底超时强制结束
+const SHELL_TIMEOUT_MS = 30000;
+
 // 应用退出时自动停止所有录屏进程
 async function stopAllScreenRecords() {
   if (screenRecordProcs.size === 0) return;
@@ -33,6 +39,17 @@ async function stopAllScreenRecords() {
 // 判断是否有正在进行的录屏（供 before-quit 决定是否 preventDefault）
 function hasActiveScreenRecords() {
   return screenRecordProcs.size > 0;
+}
+
+// 应用退出时清理所有未结束的终端 shell 进程
+function stopAllShellProcs() {
+  if (shellProcs.size === 0) return;
+  for (const [, entry] of shellProcs) {
+    if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+    try { if (!entry.proc.killed) entry.proc.kill(); } catch (e) {}
+    if (typeof entry.settle === 'function') entry.settle('cancelled');
+  }
+  shellProcs.clear();
 }
 
 function register(ipcMain) {
@@ -140,29 +157,73 @@ function register(ipcMain) {
   // Basic device control handlers
   // 用户输入的 command（含 |、>、< 等）整体传给 Android shell 执行
   ipcMain.handle('adb:shell', async (event, { deviceId, command }) => {
+    const requestId = `${deviceId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const output = await new Promise((resolve, reject) => {
+      const result = await new Promise((resolve) => {
         const proc = spawn('adb', ['-s', deviceId, 'shell', command], {
           windowsHide: true,
           encoding: 'utf8'
         });
         let stdout = '';
         let stderr = '';
+        let settled = false;
+        const entry = { proc, deviceId, timer: null, settle: null };
+
+        const settle = (status) => {
+          if (settled) return;
+          settled = true;
+          if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+          shellProcs.delete(requestId);
+          resolve({ status, stdout: stdout.trim(), stderr: stderr.trim() });
+        };
+        entry.settle = settle;
+
         proc.stdout.on('data', (data) => { stdout += data.toString(); });
         proc.stderr.on('data', (data) => { stderr += data.toString(); });
-        proc.on('error', reject);
+        proc.on('error', () => settle('error'));
+
+        // 超时兜底：su 等交互式命令会一直挂起，到点强制结束并返回已收集输出
+        entry.timer = setTimeout(() => {
+          try { proc.kill(); } catch (e) {}
+          settle('timeout');
+        }, SHELL_TIMEOUT_MS);
+
+        shellProcs.set(requestId, entry);
+
         proc.on('close', (code) => {
-          if (code !== 0) {
-            reject(new Error(stderr.trim() || `Command failed with code ${code}`));
-          } else {
-            resolve(stdout.trim());
-          }
+          settle(code === 0 ? 'ok' : 'fail');
         });
       });
-      return { success: true, output };
+
+      if (result.status === 'ok') {
+        return { success: true, output: result.stdout };
+      }
+      if (result.status === 'fail') {
+        return { success: false, error: result.stderr || `命令执行失败（退出码异常）`, output: result.stdout };
+      }
+      if (result.status === 'timeout') {
+        const hint = `命令执行超时（${SHELL_TIMEOUT_MS / 1000} 秒），可能进入了交互式 Shell（如 su/sh/top），已自动结束`;
+        return { success: false, error: hint, output: result.stdout || result.stderr };
+      }
+      if (result.status === 'cancelled') {
+        return { success: false, cancelled: true, error: '命令已中断', output: result.stdout };
+      }
+      return { success: false, error: result.stderr || '命令启动失败' };
     } catch (error) {
       return { success: false, error: error.message };
     }
+  });
+
+  // 中断指定设备正在执行的 shell 命令
+  ipcMain.handle('adb:shell:cancel', async (event, { deviceId }) => {
+    let killed = 0;
+    for (const [id, entry] of [...shellProcs]) {
+      if (entry.deviceId !== deviceId) continue;
+      try { if (!entry.proc.killed) entry.proc.kill(); } catch (e) {}
+      entry.settle('cancelled');
+      killed++;
+    }
+    return { success: true, killed };
   });
 
   // Screenshot: pull file from device
