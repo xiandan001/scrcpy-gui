@@ -9,6 +9,7 @@ const packageManager = require('./package-manager.cjs');
 const performanceMonitor = require('./performance-monitor.cjs');
 const inspection = require('./inspection.cjs');
 const vip = require('./vip.cjs');
+const aiAnalyze = require('./ai-analyze.cjs');
 const { getAppVersion } = require('./version.cjs');
 
 const BUNDLED_ADB_PATH = path.join(__dirname, '../../scrcpy-win64/adb.exe');
@@ -60,11 +61,15 @@ function register(ipcMain) {
       issueType: ISSUE_TYPES[args?.issueType] ? args.issueType : 'generic',
       packageName: normalizePackageName(args?.packageName),
       includeInspection: args?.includeInspection !== false,
+      includeAiSummary: args?.includeAiSummary === true,
       cancelled: false,
       currentProc: null,
       status: 'running',
       startedAt: new Date().toISOString(),
-      steps: createStepState(),
+      steps: createStepState({
+        includeInspection: args?.includeInspection !== false,
+        includeAiSummary: args?.includeAiSummary === true
+      }),
       result: null
     };
 
@@ -132,6 +137,7 @@ async function runTroubleshooting(task) {
     outputDir,
     rawDir,
     vip: vipStatus.activated === true,
+    includeAiSummary: task.includeAiSummary,
     artifacts: [],
     checks: []
   };
@@ -142,6 +148,7 @@ async function runTroubleshooting(task) {
     deviceId: task.deviceId,
     issueType: task.issueType,
     packageName: task.packageName,
+    includeAiSummary: task.includeAiSummary,
     startedAt: task.startedAt
   });
 
@@ -256,6 +263,7 @@ async function runTroubleshooting(task) {
     context.checks.push({ key: 'inspection', ok: true, skipped: true, label: '巡检已跳过', detail });
   }
 
+  await prepareAiSummary(task, context);
   return finishTask(task, context);
 }
 
@@ -269,6 +277,27 @@ async function runStep(task, stepId, label, action) {
   } catch (error) {
     markStep(task, stepId, 'failed', error.message || `${label}失败`);
     throw error;
+  }
+}
+
+async function prepareAiSummary(task, context) {
+  if (!task.includeAiSummary) {
+    context.aiSummary = { ok: false, skipped: true, summary: '' };
+    markStep(task, 'aiSummary', 'skipped', '未勾选 AI 总结');
+    return;
+  }
+
+  markStep(task, 'aiSummary', 'running', '正在生成 AI 总结');
+  try {
+    context.aiSummary = await buildTroubleshootingAiSummary(context);
+    if (context.aiSummary?.ok) {
+      markStep(task, 'aiSummary', 'success', 'AI 总结已写入报告');
+    } else {
+      markStep(task, 'aiSummary', 'skipped', `AI 总结未生成：${context.aiSummary?.error || '未知错误'}`);
+    }
+  } catch (error) {
+    context.aiSummary = { ok: false, error: error.message || 'AI 总结异常', summary: '' };
+    markStep(task, 'aiSummary', 'skipped', `AI 总结未生成：${context.aiSummary.error}`);
   }
 }
 
@@ -288,6 +317,7 @@ async function finishTask(task, context) {
     summaryPath: path.join(context.outputDir, 'troubleshooting-summary.json'),
     checks: context.checks,
     artifacts: context.artifacts,
+    aiSummary: context.aiSummary,
     startedAt: context.startedAt,
     endedAt
   };
@@ -310,6 +340,7 @@ async function finishCancelled(task, context) {
     summaryPath: path.join(context.outputDir, 'troubleshooting-summary.json'),
     checks: context.checks,
     artifacts: context.artifacts,
+    aiSummary: { ok: false, skipped: true, summary: '', error: '任务已取消，未生成 AI 总结' },
     startedAt: context.startedAt,
     endedAt: new Date().toISOString()
   };
@@ -433,7 +464,67 @@ function buildReport(context, summary) {
     }
   }
 
+  lines.push('', '## AI 总结', '', ...formatAiSummaryLines(summary.aiSummary), '');
+
   return `${lines.join('\n')}\n`;
+}
+
+function formatAiSummaryLines(aiSummary) {
+  if (!aiSummary) return ['- 未勾选 AI 总结'];
+  if (aiSummary.skipped) return [`- ${aiSummary.error || '未勾选 AI 总结'}`];
+  if (!aiSummary.ok) return [`- AI 总结未生成：${aiSummary.error || '未知错误'}`];
+  const lines = String(aiSummary.summary || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(line => line.trimEnd());
+  return lines.some(Boolean) ? lines : ['- AI 总结为空'];
+}
+
+function buildTroubleshootingAiSummary(context) {
+  const checks = (context.checks || []).map(item => ({
+    label: item.label,
+    ok: item.ok,
+    skipped: item.skipped,
+    detail: item.detail
+  }));
+  const payload = {
+    issueType: context.issueLabel,
+    device: context.device || null,
+    packageName: context.packageName || '',
+    packageDetail: context.packageDetail ? {
+      packageName: context.packageDetail.packageName,
+      versionName: context.packageDetail.versionName,
+      versionCode: context.packageDetail.versionCode,
+      apkPath: context.packageDetail.apkPath || context.packageDetail.path
+    } : null,
+    checks,
+    performance: context.performance ? {
+      summary: summarizePerformance(context.performance),
+      warnings: Array.isArray(context.performance.warnings) ? context.performance.warnings.slice(0, 20) : []
+    } : null,
+    logSummary: context.logSummary ? {
+      matchedCount: context.logSummary.matchedCount,
+      topPatterns: context.logSummary.topPatterns,
+      matchedLines: context.logSummary.matchedLines.slice(0, 30)
+    } : null,
+    inspectionReport: context.inspection?.reportPath || '',
+    artifacts: (context.artifacts || []).map(item => ({ label: item.label, path: item.path }))
+  };
+  return aiAnalyze.generateAiSummary({
+    timeoutMs: 60000,
+    temperature: 0.2,
+    systemPrompt: '你是 Android 问题排查助手。只能根据提供的结构化证据输出中文总结，不要编造未提供的数据。',
+    userContent: [
+      '请为以下一键问题排查报告生成可直接追加到 Markdown 报告末尾的 AI 总结。',
+      '输出要求：',
+      '1. 使用简体中文。',
+      '2. 包含：总体判断、关键证据、优先排查建议。',
+      '3. 不要输出 Markdown 一级/二级标题，报告中已有“AI 总结”标题。',
+      '4. 不要编造未提供的数据。',
+      '',
+      JSON.stringify(payload, null, 2)
+    ].join('\n')
+  });
 }
 
 function analyzeLogs(text, issueType, packageName) {
@@ -484,14 +575,19 @@ function parseDeviceProps(text) {
   };
 }
 
-function createStepState() {
+function createStepState(options = {}) {
   return [
     { id: 'device', label: '设备连接', status: 'pending', detail: '' },
     { id: 'package', label: '应用信息', status: 'pending', detail: '' },
     { id: 'performance', label: '性能快照', status: 'pending', detail: '' },
     { id: 'logs', label: '关键日志', status: 'pending', detail: '' },
-    { id: 'inspection', label: '巡检证据', status: 'pending', detail: '' }
-  ];
+    { id: 'inspection', label: '巡检证据', status: 'pending', detail: '' },
+    { id: 'aiSummary', label: 'AI 总结', status: 'pending', detail: '' }
+  ].filter(step => {
+    if (step.id === 'inspection') return options.includeInspection !== false;
+    if (step.id === 'aiSummary') return options.includeAiSummary === true;
+    return true;
+  });
 }
 
 function markStep(task, stepId, status, detail) {
@@ -508,6 +604,8 @@ function sendProgress(task, stepId, status, detail) {
     taskId: task.id,
     deviceId: task.deviceId,
     status: task.status,
+    includeInspection: task.includeInspection,
+    includeAiSummary: task.includeAiSummary,
     stepId,
     stepStatus: status,
     detail: detail || '',
@@ -520,6 +618,8 @@ function sendDone(task, result) {
     taskId: task.id,
     deviceId: task.deviceId,
     status: task.status,
+    includeInspection: task.includeInspection,
+    includeAiSummary: task.includeAiSummary,
     steps: task.steps,
     result
   });
@@ -540,6 +640,8 @@ function publicTask(task) {
     deviceLabel: task.deviceLabel,
     issueType: task.issueType,
     packageName: task.packageName,
+    includeInspection: task.includeInspection,
+    includeAiSummary: task.includeAiSummary,
     status: task.status,
     startedAt: task.startedAt,
     steps: task.steps,

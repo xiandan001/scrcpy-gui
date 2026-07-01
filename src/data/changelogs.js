@@ -2,6 +2,14 @@
 // 格式：{ title, date, items: [{ type: 'feature'|'fix'|'improve', text }] }
 // type 对应不同颜色标签：feature(绿色新增) fix(红色修复) improve(蓝色优化)
 const CHANGELOGS = {
+  '3.8.2': {
+    title: 'v3.8.2',
+    date: '2026-07-01',
+    items: [
+      { type: 'feature', text: '问题排查报告新增可选 AI 总结，勾选后会在报告末尾追加分析结论' },
+      { type: 'improve', text: '优化问题排查执行进度：AI 总结和巡检证据包会根据勾选状态动态显示' }
+    ]
+  },
   '3.8.1': {
     title: 'v3.8.1',
     date: '2026-06-29',

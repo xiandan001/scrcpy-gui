@@ -14,6 +14,7 @@ import {
   Play,
   Search,
   ShieldAlert,
+  Sparkles,
   Smartphone,
   Square,
   Zap
@@ -33,8 +34,18 @@ const DEFAULT_STEPS = [
   { id: 'package', label: '应用信息', status: 'pending', detail: '' },
   { id: 'performance', label: '性能快照', status: 'pending', detail: '' },
   { id: 'logs', label: '关键日志', status: 'pending', detail: '' },
-  { id: 'inspection', label: '巡检证据', status: 'pending', detail: '' }
+  { id: 'inspection', label: '巡检证据', status: 'pending', detail: '' },
+  { id: 'aiSummary', label: 'AI 总结', status: 'pending', detail: '' }
 ];
+
+function filterProgressSteps(sourceSteps, options) {
+  const list = Array.isArray(sourceSteps) && sourceSteps.length > 0 ? sourceSteps : DEFAULT_STEPS;
+  return list.filter(step => {
+    if (step.id === 'inspection') return options.includeInspection === true;
+    if (step.id === 'aiSummary') return options.includeAiSummary === true;
+    return true;
+  });
+}
 
 function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMemberCenter }) {
   const t = theme;
@@ -50,6 +61,7 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
   const [packageItems, setPackageItems] = useState([]);
   const [packageDeviceId, setPackageDeviceId] = useState('');
   const [includeInspection, setIncludeInspection] = useState(true);
+  const [includeAiSummary, setIncludeAiSummary] = useState(true);
   const [steps, setSteps] = useState(DEFAULT_STEPS);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
@@ -91,10 +103,14 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
     if (!window.electronAPI?.onTroubleshootingProgress) return undefined;
     const offProgress = window.electronAPI.onTroubleshootingProgress((event) => {
       setRunning(event.status === 'running' || event.status === 'cancelling');
+      if (typeof event.includeInspection === 'boolean') setIncludeInspection(event.includeInspection);
+      if (typeof event.includeAiSummary === 'boolean') setIncludeAiSummary(event.includeAiSummary);
       if (Array.isArray(event.steps)) setSteps(event.steps);
     });
     const offDone = window.electronAPI.onTroubleshootingDone((event) => {
       setRunning(false);
+      if (typeof event.includeInspection === 'boolean') setIncludeInspection(event.includeInspection);
+      if (typeof event.includeAiSummary === 'boolean') setIncludeAiSummary(event.includeAiSummary);
       if (Array.isArray(event.steps)) setSteps(event.steps);
       setResult(event.result || null);
       if (event.result?.ok) showToast?.('一键问题排查完成');
@@ -105,6 +121,8 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
       const task = res?.task;
       if (!task) return;
       setRunning(task.status === 'running' || task.status === 'cancelling');
+      if (typeof task.includeInspection === 'boolean') setIncludeInspection(task.includeInspection);
+      if (typeof task.includeAiSummary === 'boolean') setIncludeAiSummary(task.includeAiSummary);
       if (Array.isArray(task.steps)) setSteps(task.steps);
       if (task.result) setResult(task.result);
     });
@@ -156,7 +174,8 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
       deviceLabel: selectedDevice?.model || selectedDevice?.name || selectedDeviceId,
       issueType,
       packageName: packageName.trim(),
-      includeInspection: hasVip && includeInspection
+      includeInspection: hasVip && includeInspection,
+      includeAiSummary
     });
     if (!res.ok) {
       setRunning(false);
@@ -219,8 +238,14 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
     if (res && !res.ok) showToast?.(`打开失败：${res.error || '未知错误'}`);
   };
 
-  const completedCount = steps.filter(step => ['success', 'failed', 'skipped'].includes(step.status)).length;
-  const progressPercent = Math.round(completedCount / steps.length * 100);
+  const visibleSteps = useMemo(
+    () => filterProgressSteps(steps, { includeInspection: hasVip && includeInspection, includeAiSummary }),
+    [steps, hasVip, includeInspection, includeAiSummary]
+  );
+  const completedCount = visibleSteps.filter(step => ['success', 'failed', 'skipped'].includes(step.status)).length;
+  const progressTotal = visibleSteps.length;
+  const progressPercent = progressTotal ? Math.round(completedCount / progressTotal * 100) : 0;
+  const progressGridClass = progressTotal >= 5 ? 'grid sm:grid-cols-2 lg:grid-cols-5 gap-2' : 'grid sm:grid-cols-2 lg:grid-cols-4 gap-2';
 
   return (
     <div className="space-y-5">
@@ -385,6 +410,21 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
               )}
             </label>
 
+            <label className={`flex items-start gap-3 rounded-lg border p-3 ${soft}`}>
+              <input
+                type="checkbox"
+                checked={includeAiSummary}
+                disabled={running}
+                onChange={(event) => setIncludeAiSummary(event.target.checked)}
+                className="mt-1 w-4 h-4 accent-emerald-500"
+              />
+              <span className="flex-1">
+                <span className={`block text-sm font-medium ${text}`}>报告包含 AI 总结</span>
+                <span className={`block text-xs mt-1 ${muted}`}>勾选后会在问题排查报告末尾追加 AI 总结</span>
+              </span>
+              <Sparkles size={15} className="mt-0.5 text-emerald-400" />
+            </label>
+
             <div className="flex gap-2">
               {running ? (
                 <button
@@ -412,7 +452,7 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <div className={`font-semibold ${text}`}>执行进度</div>
-                  <div className={`text-xs mt-1 ${muted}`}>{completedCount}/{steps.length} 项完成</div>
+                  <div className={`text-xs mt-1 ${muted}`}>{completedCount}/{progressTotal} 项完成</div>
                 </div>
                 <div className={`text-sm font-semibold ${running ? 'text-emerald-400' : muted}`}>{progressPercent}%</div>
               </div>
@@ -421,8 +461,8 @@ function TroubleshootingWizard({ devices, theme, vipStatus, showToast, onOpenMem
               </div>
             </div>
 
-            <div className="grid lg:grid-cols-5 gap-2">
-              {steps.map(step => (
+            <div className={progressGridClass}>
+              {visibleSteps.map(step => (
                 <StepTile key={step.id} step={step} isDark={isDark} />
               ))}
             </div>
