@@ -14,6 +14,7 @@ import EnvironmentCheckWizard from './components/EnvironmentCheckWizard';
 import GlobalCommandPalette, { GlobalCommandSettings } from './components/GlobalCommandPalette';
 import DangerConfirmModal from './components/DangerConfirmModal';
 import { isCommandShortcutMatch, normalizeCommandSettings } from './data/globalCommands';
+import { clearConfirmSuppressionMemory, isConfirmSuppressed, rememberConfirmSuppressed } from './shared/confirmMemory';
 
 function App() {
   const [devices, setDevices] = useState([]);
@@ -54,14 +55,27 @@ function App() {
     const next = typeof options === 'string'
       ? { title: '确认操作', message: options, onConfirm }
       : { ...options, onConfirm: options?.onConfirm || onConfirm };
+    if (next.rememberKey && isConfirmSuppressed(next.rememberKey)) {
+      Promise.resolve()
+        .then(() => next.onConfirm?.())
+        .catch((err) => showToast(`操作失败: ${err?.message || '未知错误'}`));
+      return;
+    }
+    next.rememberChoice = false;
+    next.rememberLabel = next.rememberLabel || '下次不再提示';
     setConfirmModal(next);
-  }, []);
+  }, [showToast]);
   const runConfirmModal = async () => {
     if (!confirmModal?.onConfirm) return;
     setConfirmLoading(true);
     try {
       const result = await confirmModal.onConfirm();
-      if (result !== false) setConfirmModal(null);
+      if (result !== false) {
+        if (confirmModal.rememberKey && confirmModal.rememberChoice) {
+          rememberConfirmSuppressed(confirmModal.rememberKey);
+        }
+        setConfirmModal(null);
+      }
     } finally {
       setConfirmLoading(false);
     }
@@ -799,6 +813,7 @@ function App() {
       message: '确定清空所有已保存的终端命令吗？',
       detail: '该操作只清除本机命令历史，不影响当前终端输出和设备数据。',
       confirmLabel: '清空历史',
+      rememberKey: 'app.clearTerminalHistory',
       onConfirm: async () => {
         setTerminalCommandHistory([]);
         if (window.electronAPI) {
@@ -849,6 +864,7 @@ function App() {
       message: `确定重启设备 ${deviceId} 吗？`,
       detail: '重启会中断当前投屏、日志抓取和未完成的设备操作。设备重新上线后可刷新列表继续使用。',
       confirmLabel: '重启设备',
+      rememberKey: 'device.reboot',
       onConfirm: async () => {
         setOperationLoading(prev => ({ ...prev, [`reboot_${deviceId}`]: true }));
         try {
@@ -878,6 +894,7 @@ function App() {
       message: `确定让设备 ${deviceId} 进入 loader 模式吗？`,
       detail: '设备会断开当前 ADB 会话并进入刷机/引导模式；通常需要手动重启或刷机工具才能回到系统。',
       confirmLabel: '进入 Loader',
+      rememberKey: 'device.rebootLoader',
       onConfirm: async () => {
         setOperationLoading(prev => ({ ...prev, [`loader_${deviceId}`]: true }));
         try {
@@ -902,60 +919,43 @@ function App() {
   };
 
   const handleRoot = async (deviceId) => {
-    showConfirm({
-      title: '执行 ADB Root',
-      message: `确定对设备 ${deviceId} 执行 root 吗？`,
-      detail: 'Root 会重启 adbd 并改变后续命令权限；如结果异常，可重启设备恢复普通会话。',
-      confirmLabel: '执行 Root',
-      tone: 'warning',
-      onConfirm: async () => {
-        setOperationLoading(prev => ({ ...prev, [`root_${deviceId}`]: true }));
-        try {
-          if (window.electronAPI) {
-            const res = await window.electronAPI.adbRoot(deviceId);
-            if (res.success) {
-              showToast(`Root 成功！${res.message}`);
-            } else {
-              showToast(`Root 失败: ${res.error}`);
-            }
-          } else {
-            showToast('Root 功能需要 Electron 环境');
-          }
-        } catch (err) {
-          showToast(`Root 执行失败: ${err.message}`);
-        } finally {
-          setOperationLoading(prev => ({ ...prev, [`root_${deviceId}`]: false }));
+    setOperationLoading(prev => ({ ...prev, [`root_${deviceId}`]: true }));
+    try {
+      if (window.electronAPI) {
+        const res = await window.electronAPI.adbRoot(deviceId);
+        if (res.success) {
+          showToast(`Root 成功！${res.message}`);
+        } else {
+          showToast(`Root 失败: ${res.error}`);
         }
+      } else {
+        showToast('Root 功能需要 Electron 环境');
       }
-    });
+    } catch (err) {
+      showToast(`Root 执行失败: ${err.message}`);
+    } finally {
+      setOperationLoading(prev => ({ ...prev, [`root_${deviceId}`]: false }));
+    }
   };
 
   const handleRemount = async (deviceId) => {
-    showConfirm({
-      title: '重新挂载系统分区',
-      message: `确定对设备 ${deviceId} 执行 remount 吗？`,
-      detail: 'Remount 可能让系统分区变为可写，后续推送或命令会影响系统文件。建议只在明确需要修改系统分区时使用。',
-      confirmLabel: '执行 Remount',
-      onConfirm: async () => {
-        setOperationLoading(prev => ({ ...prev, [`remount_${deviceId}`]: true }));
-        try {
-          if (window.electronAPI) {
-            const res = await window.electronAPI.adbRemount(deviceId);
-            if (res.success) {
-              showToast(`Remount 成功！${res.message}`);
-            } else {
-              showToast(`Remount 失败: ${res.error}`);
-            }
-          } else {
-            showToast('Remount 功能需要 Electron 环境');
-          }
-        } catch (err) {
-          showToast(`Remount 执行失败: ${err.message}`);
-        } finally {
-          setOperationLoading(prev => ({ ...prev, [`remount_${deviceId}`]: false }));
+    setOperationLoading(prev => ({ ...prev, [`remount_${deviceId}`]: true }));
+    try {
+      if (window.electronAPI) {
+        const res = await window.electronAPI.adbRemount(deviceId);
+        if (res.success) {
+          showToast(`Remount 成功！${res.message}`);
+        } else {
+          showToast(`Remount 失败: ${res.error}`);
         }
+      } else {
+        showToast('Remount 功能需要 Electron 环境');
       }
-    });
+    } catch (err) {
+      showToast(`Remount 执行失败: ${err.message}`);
+    } finally {
+      setOperationLoading(prev => ({ ...prev, [`remount_${deviceId}`]: false }));
+    }
   };
 
   const handleSelectApkFile = async (deviceId, forWhat) => {
@@ -1000,33 +1000,23 @@ function App() {
       showToast('请先选择一个 APK 文件');
       return;
     }
-    showConfirm({
-      title: '安装 APK',
-      message: `确定安装到设备 ${deviceId} 吗？`,
-      detail: '安装命令会使用覆盖/降级参数，可能替换设备上的现有应用。需要回退时请保留当前 APK 或重新安装旧版本。',
-      bullets: [apkPath],
-      confirmLabel: '安装 APK',
-      tone: 'warning',
-      onConfirm: async () => {
-        setOperationLoading(prev => ({ ...prev, [`install_${deviceId}`]: true }));
-        try {
-          if (window.electronAPI) {
-            const res = await window.electronAPI.adbInstall(deviceId, apkPath);
-            if (res.success) {
-              showToast(`安装成功！文件: ${apkPath}`);
-            } else {
-              showToast(`安装失败: ${res.error}`);
-            }
-          } else {
-            showToast('安装功能需要 Electron 环境');
-          }
-        } catch (err) {
-          showToast(`安装失败: ${err.message}`);
-        } finally {
-          setOperationLoading(prev => ({ ...prev, [`install_${deviceId}`]: false }));
+    setOperationLoading(prev => ({ ...prev, [`install_${deviceId}`]: true }));
+    try {
+      if (window.electronAPI) {
+        const res = await window.electronAPI.adbInstall(deviceId, apkPath);
+        if (res.success) {
+          showToast(`安装成功！文件: ${apkPath}`);
+        } else {
+          showToast(`安装失败: ${res.error}`);
         }
+      } else {
+        showToast('安装功能需要 Electron 环境');
       }
-    });
+    } catch (err) {
+      showToast(`安装失败: ${err.message}`);
+    } finally {
+      setOperationLoading(prev => ({ ...prev, [`install_${deviceId}`]: false }));
+    }
   };
 
   const handlePushApk = async (deviceId) => {
@@ -1038,20 +1028,6 @@ function App() {
     }
     if (!remotePath) {
       showToast('请输入远程路径');
-      return;
-    }
-    const protectedPath = /^\/(system|system_ext|vendor|product|odm|data)\b/.test(remotePath.trim());
-    if (protectedPath) {
-      showConfirm({
-        title: '推送到敏感目录',
-        message: `确定推送文件到 ${remotePath} 吗？`,
-        detail: '该目录可能影响系统或应用数据。建议先确认目标路径和文件名；如需回退，请提前备份原文件。',
-        bullets: [localPath],
-        confirmLabel: '继续推送',
-        onConfirm: async () => {
-          await runPushFile(deviceId, localPath, remotePath);
-        }
-      });
       return;
     }
     await runPushFile(deviceId, localPath, remotePath);
@@ -1187,6 +1163,7 @@ function App() {
       message: `确定断开设备 ${deviceId} 吗？`,
       detail: '断开后当前投屏、文件操作和终端命令都会失去目标设备。可重新插拔 USB 或重新发起 Wi-Fi 连接恢复。',
       confirmLabel: '断开连接',
+      rememberKey: 'device.disconnect',
       onConfirm: async () => {
         try {
           if (window.electronAPI) {
@@ -1310,6 +1287,11 @@ function App() {
         cancelLabel={confirmModal?.cancelLabel || '取消'}
         tone={confirmModal?.tone || 'danger'}
         loading={confirmLoading}
+        rememberChoice={!!confirmModal?.rememberChoice}
+        rememberLabel={confirmModal?.rememberLabel || '下次不再提示'}
+        onRememberChoiceChange={confirmModal?.rememberKey ? (checked) => {
+          setConfirmModal(prev => prev ? { ...prev, rememberChoice: checked } : prev);
+        } : undefined}
         onCancel={() => setConfirmModal(null)}
         onConfirm={runConfirmModal}
       />
@@ -1721,12 +1703,18 @@ function App() {
                   {connectionHistory.length > 0 && (
                     <button
                       onClick={() => {
-                        showConfirm('确定要清除所有连接历史吗？', async () => {
-                          if (window.electronAPI) {
-                            await window.electronAPI.clearConnectionHistory();
+                        showConfirm({
+                          title: '清除连接历史',
+                          message: '确定要清除所有连接历史吗？',
+                          confirmLabel: '清除历史',
+                          rememberKey: 'history.clearConnections',
+                          onConfirm: async () => {
+                            if (window.electronAPI) {
+                              await window.electronAPI.clearConnectionHistory();
+                            }
+                            setConnectionHistory([]);
+                            showToast('历史记录已清除');
                           }
-                          setConnectionHistory([]);
-                          showToast('历史记录已清除');
                         });
                       }}
                       className={`text-sm px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${t.primary === 'tech' ? 'text-[#9AA0A6] hover:text-red-400 hover:bg-red-900/30' : 'text-[#80868B] hover:text-red-600 hover:bg-red-50'}`}
@@ -2452,7 +2440,12 @@ function App() {
                     </div>
                     <button
                       onClick={async () => {
-                        showConfirm('确定要重置所有设置吗？这将清除所有自定义主题和配置。', async () => {
+                        showConfirm({
+                          title: '重置所有设置',
+                          message: '确定要重置所有设置吗？这将清除所有自定义主题和配置。',
+                          confirmLabel: '重置',
+                          rememberKey: 'settings.resetAll',
+                          onConfirm: async () => {
                           setCustomThemes([]);
                           setCurrentTheme('default');
                           setScreenshotPath('');
@@ -2479,7 +2472,9 @@ function App() {
                             await window.electronAPI.savePerformancePath('');
                             await window.electronAPI.saveTaskCenterPath('');
                           }
+                          clearConfirmSuppressionMemory();
                           showToast('所有设置已重置为默认值');
+                          }
                         });
                       }}
                       className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 ${t.primary === 'tech' ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30' : 'bg-red-50 hover:bg-red-100 text-red-600 border border-red-200'}`}

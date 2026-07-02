@@ -2,6 +2,14 @@
 // 格式：{ title, date, items: [{ type: 'feature'|'fix'|'improve', text }] }
 // type 对应不同颜色标签：feature(绿色新增) fix(红色修复) improve(蓝色优化)
 const CHANGELOGS = {
+  '3.8.4': {
+    title: 'v3.8.4',
+    date: '2026-07-02',
+    items: [
+      { type: 'improve', text: '优化设备操作确认流程：Root、Remount、安装 APK 和推送文件改为直接执行' },
+      { type: 'feature', text: '确认弹窗新增独立记忆：可为每个弹窗单独勾选下次不再提示，并可在偏好设置中重置' }
+    ]
+  },
   '3.8.3': {
     title: 'v3.8.3',
     date: '2026-07-02',

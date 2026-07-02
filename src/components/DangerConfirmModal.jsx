@@ -11,6 +11,9 @@ function DangerConfirmModal({
   cancelLabel = '取消',
   tone = 'danger',
   loading = false,
+  rememberChoice = false,
+  rememberLabel = '下次不再提示',
+  onRememberChoiceChange,
   onCancel,
   onConfirm
 }) {
@@ -62,7 +65,20 @@ function DangerConfirmModal({
           </div>
         )}
 
-        <div className={`flex items-center justify-end gap-2 border-t px-5 py-4 ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+        <div className={`flex flex-col gap-3 border-t px-5 py-4 sm:flex-row sm:items-center sm:justify-between ${isDark ? 'border-[#3E4145]' : 'border-slate-100'}`}>
+          {onRememberChoiceChange ? (
+            <label className={`inline-flex items-center gap-2 text-sm ${muted}`}>
+              <input
+                type="checkbox"
+                checked={rememberChoice}
+                disabled={loading}
+                onChange={(event) => onRememberChoiceChange(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 disabled:opacity-60"
+              />
+              <span>{rememberLabel}</span>
+            </label>
+          ) : <span />}
+          <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
@@ -80,6 +96,7 @@ function DangerConfirmModal({
             {loading && <Loader2 size={15} className="animate-spin" />}
             {confirmLabel}
           </button>
+          </div>
         </div>
       </div>
     </div>

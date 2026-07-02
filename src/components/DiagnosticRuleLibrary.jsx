@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Clipboard, Download, Edit3, Lock, Plus, RefreshCw, RotateCcw, Save, SearchCheck, Trash2, Upload, X } from 'lucide-react';
 import DangerConfirmModal from './DangerConfirmModal';
+import { isConfirmSuppressed, rememberConfirmSuppressed } from '../shared/confirmMemory';
 
 const EMPTY_RULE = {
   id: '',
@@ -88,11 +89,12 @@ function DiagnosticRuleLibrary({ theme, open, onClose, isVip, onVipRequired }) {
       onVipRequired?.('删除自定义规则');
       return;
     }
-    setConfirmDialog({
+    openConfirmDialog({
       title: '删除诊断规则',
       message: `确定删除「${rule.label}」吗？`,
       detail: '删除后该规则不会再参与自动诊断；如需恢复，只能重新创建或导入规则备份。',
       confirmLabel: '删除规则',
+      rememberKey: 'diagnosticRule.delete',
       onConfirm: async () => {
         setSaving(true);
         try {
@@ -109,11 +111,12 @@ function DiagnosticRuleLibrary({ theme, open, onClose, isVip, onVipRequired }) {
   };
 
   const resetRules = async () => {
-    setConfirmDialog({
+    openConfirmDialog({
       title: '重置诊断规则',
       message: '确定恢复默认诊断规则吗？',
       detail: '重置会覆盖当前规则配置。建议先导出备份，再执行重置。',
       confirmLabel: '重置规则',
+      rememberKey: 'diagnosticRule.reset',
       onConfirm: async () => {
         setSaving(true);
         try {
@@ -133,12 +136,32 @@ function DiagnosticRuleLibrary({ theme, open, onClose, isVip, onVipRequired }) {
     });
   };
 
+  const openConfirmDialog = (dialog) => {
+    const next = {
+      ...dialog,
+      rememberChoice: false,
+      rememberLabel: dialog.rememberLabel || '下次不再提示'
+    };
+    if (next.rememberKey && isConfirmSuppressed(next.rememberKey)) {
+      Promise.resolve()
+        .then(() => next.onConfirm?.())
+        .catch((err) => setError(err?.message || '操作失败'));
+      return;
+    }
+    setConfirmDialog(next);
+  };
+
   const runConfirmDialog = async () => {
     if (!confirmDialog?.onConfirm) return;
     setConfirmLoading(true);
     try {
       const result = await confirmDialog.onConfirm();
-      if (result !== false) setConfirmDialog(null);
+      if (result !== false) {
+        if (confirmDialog.rememberKey && confirmDialog.rememberChoice) {
+          rememberConfirmSuppressed(confirmDialog.rememberKey);
+        }
+        setConfirmDialog(null);
+      }
     } finally {
       setConfirmLoading(false);
     }
@@ -198,6 +221,11 @@ function DiagnosticRuleLibrary({ theme, open, onClose, isVip, onVipRequired }) {
       detail={confirmDialog?.detail}
       confirmLabel={confirmDialog?.confirmLabel || '确定'}
       loading={confirmLoading}
+      rememberChoice={!!confirmDialog?.rememberChoice}
+      rememberLabel={confirmDialog?.rememberLabel || '下次不再提示'}
+      onRememberChoiceChange={confirmDialog?.rememberKey ? (checked) => {
+        setConfirmDialog(prev => prev ? { ...prev, rememberChoice: checked } : prev);
+      } : undefined}
       onCancel={() => setConfirmDialog(null)}
       onConfirm={runConfirmDialog}
     />

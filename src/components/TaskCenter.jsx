@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { isConfirmSuppressed, rememberConfirmSuppressed } from '../shared/confirmMemory';
 import {
   AlertCircle,
   Camera,
@@ -181,12 +182,32 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
     setConfirmLoading(true);
     try {
       const result = await confirmDialog.onConfirm();
-      if (result !== false) setConfirmDialog(null);
+      if (result !== false) {
+        if (confirmDialog.rememberKey && confirmDialog.rememberChoice) {
+          rememberConfirmSuppressed(confirmDialog.rememberKey);
+        }
+        setConfirmDialog(null);
+      }
     } catch (error) {
       showToast?.(`操作失败：${error.message || '未知错误'}`);
     } finally {
       setConfirmLoading(false);
     }
+  };
+
+  const openConfirmDialog = (dialog) => {
+    const next = {
+      ...dialog,
+      rememberChoice: false,
+      rememberLabel: dialog.rememberLabel || '下次不再提示'
+    };
+    if (next.rememberKey && isConfirmSuppressed(next.rememberKey)) {
+      Promise.resolve()
+        .then(() => next.onConfirm?.())
+        .catch((error) => showToast?.(`操作失败：${error.message || '未知错误'}`));
+      return;
+    }
+    setConfirmDialog(next);
   };
 
   useEffect(() => {
@@ -248,11 +269,12 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const deleteScript = async () => {
     if (!selectedScript) return;
     const scriptToDelete = selectedScript;
-    setConfirmDialog({
+    openConfirmDialog({
       title: '删除复现脚本',
       message: `确定删除「${scriptToDelete.name}」吗？`,
       detail: `脚本中的 ${scriptToDelete.steps?.length || 0} 个步骤会一并删除；已有运行历史和证据文件不会被清除。`,
       confirmLabel: '删除脚本',
+      rememberKey: 'taskCenter.deleteScript',
       icon: Trash2,
       onConfirm: async () => {
         const res = await window.electronAPI?.taskScriptDelete?.({ id: scriptToDelete.id });
@@ -400,11 +422,12 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const clearRecordedSteps = () => {
     const stepCount = draft.steps?.length || 0;
     if (stepCount === 0) return;
-    setConfirmDialog({
+    openConfirmDialog({
       title: '清空脚本步骤',
       message: '确定清空当前脚本步骤吗？',
       detail: `当前 ${stepCount} 个步骤会从草稿中移除；如果脚本尚未保存，关闭页面后无法恢复。`,
       confirmLabel: '清空步骤',
+      rememberKey: 'taskCenter.clearSteps',
       icon: AlertCircle,
       onConfirm: () => {
         setDraft(prev => ({ ...prev, steps: [] }));
@@ -422,11 +445,12 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const clearHistory = async () => {
     if (history.length === 0) return;
     const historyCount = history.length;
-    setConfirmDialog({
+    openConfirmDialog({
       title: '清空运行历史',
       message: '确定清空全部运行历史吗？',
       detail: `${historyCount} 条历史记录会从任务中心移除；已保存到磁盘的报告和证据目录不会被删除。`,
       confirmLabel: '清空历史',
+      rememberKey: 'taskCenter.clearHistory',
       icon: AlertCircle,
       onConfirm: async () => {
         const res = await window.electronAPI?.taskHistoryClear?.();
@@ -757,6 +781,9 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
         dialog={confirmDialog}
         theme={t}
         loading={confirmLoading}
+        onRememberChoiceChange={confirmDialog?.rememberKey ? (checked) => {
+          setConfirmDialog(prev => prev ? { ...prev, rememberChoice: checked } : prev);
+        } : undefined}
         onCancel={() => setConfirmDialog(null)}
         onConfirm={runConfirmDialog}
       />
@@ -991,7 +1018,7 @@ function SimpleStepList({ steps, theme, isDark, text, muted, onUpdateStep, onRem
   );
 }
 
-function ConfirmDialog({ dialog, theme, loading, onCancel, onConfirm }) {
+function ConfirmDialog({ dialog, theme, loading, onRememberChoiceChange, onCancel, onConfirm }) {
   useEffect(() => {
     if (!dialog) return undefined;
     const onKeyDown = (event) => {
@@ -1039,7 +1066,20 @@ function ConfirmDialog({ dialog, theme, loading, onCancel, onConfirm }) {
             )}
           </div>
         </div>
-        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {onRememberChoiceChange ? (
+            <label className={`inline-flex items-center gap-2 text-sm ${textClass}`}>
+              <input
+                type="checkbox"
+                checked={!!dialog.rememberChoice}
+                disabled={loading}
+                onChange={(event) => onRememberChoiceChange(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 disabled:opacity-60"
+              />
+              <span>{dialog.rememberLabel || '下次不再提示'}</span>
+            </label>
+          ) : <span />}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button
             type="button"
             autoFocus
@@ -1058,6 +1098,7 @@ function ConfirmDialog({ dialog, theme, loading, onCancel, onConfirm }) {
             {loading && <Loader2 size={14} className="animate-spin" />}
             {loading ? '处理中...' : dialog.confirmLabel || '确定'}
           </button>
+          </div>
         </div>
       </div>
     </div>,

@@ -25,6 +25,7 @@ import {
   Upload
 } from 'lucide-react';
 import DangerConfirmModal from './DangerConfirmModal';
+import { isConfirmSuppressed, rememberConfirmSuppressed } from '../shared/confirmMemory';
 
 function PackageManagerPanel({
   device,
@@ -159,14 +160,31 @@ function PackageManagerPanel({
     setConfirmLoading(true);
     try {
       const result = await confirmDialog.onConfirm();
-      if (result !== false) setConfirmDialog(null);
+      if (result !== false) {
+        if (confirmDialog.rememberKey && confirmDialog.rememberChoice) {
+          rememberConfirmSuppressed(confirmDialog.rememberKey);
+        }
+        setConfirmDialog(null);
+      }
     } finally {
       setConfirmLoading(false);
     }
   };
 
   const confirmPackageAction = (options, onConfirm) => {
-    setConfirmDialog({ ...options, onConfirm });
+    const next = {
+      ...options,
+      onConfirm,
+      rememberChoice: false,
+      rememberLabel: options.rememberLabel || '下次不再提示'
+    };
+    if (next.rememberKey && isConfirmSuppressed(next.rememberKey)) {
+      Promise.resolve()
+        .then(() => onConfirm?.())
+        .catch((err) => showToastRef.current?.(`操作失败: ${err?.message || '未知错误'}`));
+      return;
+    }
+    setConfirmDialog(next);
   };
 
   const exportApk = async () => {
@@ -304,6 +322,11 @@ function PackageManagerPanel({
       confirmLabel={confirmDialog?.confirmLabel || '确定'}
       tone={confirmDialog?.tone || 'danger'}
       loading={confirmLoading}
+      rememberChoice={!!confirmDialog?.rememberChoice}
+      rememberLabel={confirmDialog?.rememberLabel || '下次不再提示'}
+      onRememberChoiceChange={confirmDialog?.rememberKey ? (checked) => {
+        setConfirmDialog(prev => prev ? { ...prev, rememberChoice: checked } : prev);
+      } : undefined}
       onCancel={() => setConfirmDialog(null)}
       onConfirm={runConfirmDialog}
     />
@@ -519,13 +542,15 @@ function PackageManagerPanel({
                   title: '批量清除应用数据',
                   message: `确定清除 ${selectedCount} 个应用的数据吗？`,
                   detail: '清数据会删除应用本地账号、缓存和配置，无法从本工具直接恢复。',
-                  confirmLabel: '清除数据'
+                  confirmLabel: '清除数据',
+                  rememberKey: 'package.batchClearData'
                 })} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'clearData' ? <RefreshCw size={12} className="animate-spin" /> : <Database size={12} />}清数据</button>
                 <button type="button" onClick={() => runBatchAction('disable', '批量停用', {
                   title: '批量停用应用',
                   message: `确定停用 ${selectedCount} 个应用吗？`,
                   detail: '停用后应用不会正常启动。可在包管理中重新启用作为回滚。',
                   confirmLabel: '停用应用',
+                  rememberKey: 'package.batchDisable',
                   tone: 'warning'
                 })} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'disable' ? <RefreshCw size={12} className="animate-spin" /> : <EyeOff size={12} />}停用</button>
                 <button type="button" onClick={() => runBatchAction('enable', '批量启用')} disabled={!!batchLoading} className={`px-2.5 py-1.5 rounded border text-xs flex items-center gap-1 disabled:opacity-50 ${t.button.secondary}`}>{batchLoading === 'enable' ? <RefreshCw size={12} className="animate-spin" /> : <Eye size={12} />}启用</button>
@@ -533,7 +558,8 @@ function PackageManagerPanel({
                   title: '批量卸载应用',
                   message: `确定卸载 ${selectedCount} 个应用吗？`,
                   detail: '卸载会从当前用户移除应用。需要回退时请保留 APK，并重新安装对应版本。',
-                  confirmLabel: '卸载应用'
+                  confirmLabel: '卸载应用',
+                  rememberKey: 'package.batchUninstall'
                 })} disabled={!!batchLoading} className="px-2.5 py-1.5 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs flex items-center gap-1 disabled:opacity-50">{batchLoading === 'uninstall' ? <RefreshCw size={12} className="animate-spin" /> : <Trash2 size={12} />}卸载</button>
               </div>
             )}
@@ -622,14 +648,16 @@ function PackageManagerPanel({
                       title: '清除应用数据',
                       message: `确定清除 ${selectedPackage.packageName} 的应用数据吗？`,
                       detail: '清数据会删除该应用本地账号、缓存和配置，无法从本工具直接恢复。',
-                      confirmLabel: '清除数据'
+                      confirmLabel: '清除数据',
+                      rememberKey: 'package.clearData'
                     }, () => runPackageAction('clear', '清除数据', packageName => window.electronAPI.packageClearData({ deviceId: device.id, packageName }))))}
                     {packageActionButton('disable', detail?.enabled === false ? '启用' : '停用', detail?.enabled === false ? <Eye size={13} /> : <EyeOff size={13} />, () => runPackageAction('disable', detail?.enabled === false ? '启用应用' : '停用应用', packageName => window.electronAPI.packageSetEnabled({ deviceId: device.id, packageName, enabled: detail?.enabled === false })))}
                     {packageActionButton('uninstall', '卸载', <Trash2 size={13} />, () => confirmPackageAction({
                       title: '卸载应用',
                       message: `确定卸载 ${selectedPackage.packageName} 吗？`,
                       detail: '卸载会从当前用户移除应用。需要回退时请保留 APK，并重新安装对应版本。',
-                      confirmLabel: '卸载应用'
+                      confirmLabel: '卸载应用',
+                      rememberKey: 'package.uninstall'
                     }, () => runPackageAction('uninstall', '卸载应用', packageName => window.electronAPI.packageUninstall({ deviceId: device.id, packageName }))), 'danger')}
                   </div>
 
