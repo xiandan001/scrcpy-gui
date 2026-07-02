@@ -406,6 +406,9 @@ async function executeStep(task, deviceId, step) {
   if (type === 'tap') {
     return tapUiTarget(task, deviceId, step);
   }
+  if (type === 'longPress') {
+    return longPressUiTarget(task, deviceId, step);
+  }
   if (type === 'swipe') {
     return swipeUiTarget(task, deviceId, step);
   }
@@ -517,6 +520,16 @@ async function tapUiTarget(task, deviceId, step) {
   if (!point) return { ok: false, error: 'ui_target_not_found' };
   const res = await runAdb(task, ['-s', deviceId, 'shell', `input tap ${point.x} ${point.y}`], step.timeoutMs || DEFAULT_TIMEOUT_MS);
   return { ...res, output: res.output || `点击 ${point.x},${point.y}` };
+}
+
+async function longPressUiTarget(task, deviceId, step) {
+  const fallbackPoint = getExplicitPoint(step);
+  const point = await findUiPoint(task, deviceId, step, step.timeoutMs || DEFAULT_TIMEOUT_MS) || fallbackPoint;
+  if (!point) return { ok: false, error: 'ui_target_not_found' };
+  const duration = clampNumber(step.durationMs, 300, 10000, 800);
+  const command = `input swipe ${point.x} ${point.y} ${point.x} ${point.y} ${duration}`;
+  const res = await runAdb(task, ['-s', deviceId, 'shell', command], step.timeoutMs || DEFAULT_TIMEOUT_MS);
+  return { ...res, output: res.output || `长按 ${point.x},${point.y} ${duration}ms` };
 }
 
 async function swipeUiTarget(task, deviceId, step) {
@@ -676,7 +689,7 @@ async function recordStressAction(task, deviceId, args) {
   if (!step) return { ok: false, error: 'unsupported_record_action' };
 
   let result = { ok: true, output: '已记录' };
-  if (['tap', 'swipe', 'input', 'keyevent', 'waitText', 'assertText'].includes(step.type)) {
+  if (['tap', 'longPress', 'swipe', 'input', 'keyevent', 'waitText', 'assertText'].includes(step.type)) {
     result = await executeStep(task, deviceId, step);
   }
   if (!result.ok) return { ok: false, error: result.error || 'record_action_failed', output: result.output || '', step };
@@ -693,6 +706,17 @@ function buildRecordedStep(action, args) {
       label: `点击 ${node?.label || formatPointLabel(point)}`,
       ...selector,
       ...point
+    });
+  }
+  if (action === 'longPress') {
+    const selector = selectorFromRecordedNode(node);
+    const point = pointFromRecordedNodeOrArgs(node, args);
+    return normalizeStep({
+      type: 'longPress',
+      label: `长按 ${node?.label || formatPointLabel(point)}`,
+      ...selector,
+      ...point,
+      durationMs: args.durationMs || 800
     });
   }
   if (action === 'waitText' || action === 'assertText') {
@@ -1964,6 +1988,7 @@ function getStepTypeLabel(type) {
     imageCompare: '截图比对',
     perfSnapshot: '性能采样',
     tap: '点击',
+    longPress: '长按',
     swipe: '滑动',
     input: '输入文本',
     keyevent: '按键',

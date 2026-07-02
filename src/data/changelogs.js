@@ -2,6 +2,14 @@
 // 格式：{ title, date, items: [{ type: 'feature'|'fix'|'improve', text }] }
 // type 对应不同颜色标签：feature(绿色新增) fix(红色修复) improve(蓝色优化)
 const CHANGELOGS = {
+  '3.8.3': {
+    title: 'v3.8.3',
+    date: '2026-07-02',
+    items: [
+      { type: 'feature', text: '自动化压测新增长按操作：支持控件选择器、手动坐标和脚本编排执行' },
+      { type: 'improve', text: '优化录制回放：设备画面支持按住生成长按步骤' }
+    ]
+  },
   '3.8.2': {
     title: 'v3.8.2',
     date: '2026-07-01',

@@ -36,6 +36,7 @@ const STEP_TYPES = [
   { value: 'imageCompare', label: '截图比对', description: '采集截图并与基准图做相似度验收', icon: Camera },
   { value: 'perfSnapshot', label: '性能采样', description: '采集一次性能快照', icon: Gauge },
   { value: 'tap', label: '点击', description: '按坐标或控件选择器点击', icon: Smartphone },
+  { value: 'longPress', label: '长按', description: '按坐标或控件选择器长按', icon: Smartphone },
   { value: 'swipe', label: '滑动', description: '按坐标执行滑动手势', icon: Smartphone },
   { value: 'input', label: '输入文本', description: '向当前焦点输入文本', icon: Terminal },
   { value: 'keyevent', label: '按键', description: '发送 Android keyevent', icon: Terminal },
@@ -46,6 +47,8 @@ const STEP_TYPES = [
   { value: 'externalScript', label: '外部脚本', description: '调用 Appium、Maestro、UIAutomator2 或自定义命令', icon: Terminal },
   { value: 'delay', label: '等待', description: '等待指定毫秒数', icon: Clock3 }
 ];
+
+const LONG_PRESS_RECORD_THRESHOLD_MS = 600;
 
 const QUICK_TEMPLATES = [
   {
@@ -1198,7 +1201,13 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
     const clickThreshold = Math.max(12, Math.min(recorder.screenshotWidth, recorder.screenshotHeight) * 0.01);
     if (distance <= clickThreshold) {
       const node = findNodeAtPoint(recorder.nodes, end);
+      const durationMs = Math.max(300, Math.min(10000, Date.now() - start.startedAt || recorder.longPress.durationMs || 800));
       if (node) onChange({ selectedNodeIndex: node.index });
+      if (durationMs >= LONG_PRESS_RECORD_THRESHOLD_MS) {
+        onChange({ longPress: { ...recorder.longPress, x: end.x, y: end.y, durationMs } });
+        onRecord('longPress', { node: node || null, x: end.x, y: end.y, durationMs });
+        return;
+      }
       onRecord('tap', { node: node || null, x: end.x, y: end.y });
       return;
     }
@@ -1213,7 +1222,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
         <div className={`flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 ${isDark ? 'border-[#3E4145]' : 'border-slate-200'}`}>
           <div>
             <div className={`font-semibold ${text}`}>设备画面</div>
-            <div className={`mt-1 text-xs ${muted}`}>{recorder.screenshotWidth}x{recorder.screenshotHeight} · 点击记录点击，拖拽记录滑动</div>
+            <div className={`mt-1 text-xs ${muted}`}>{recorder.screenshotWidth}x{recorder.screenshotHeight} · 点击记录点击，长按记录长按，拖拽记录滑动</div>
           </div>
           <button
             type="button"
@@ -1246,7 +1255,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className={`font-semibold ${text}`}>录制回放</div>
-          <div className={`text-xs mt-1 ${muted}`}>{simpleMode ? '读取界面后，直接点击或拖拽设备画面生成步骤。' : '读取设备 UI 层级，执行一次操作并追加为可回放步骤。'}</div>
+          <div className={`text-xs mt-1 ${muted}`}>{simpleMode ? '读取界面后，直接点击、长按或拖拽设备画面生成步骤。' : '读取设备 UI 层级，执行一次操作并追加为可回放步骤。'}</div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {onlineDevices.map(device => {
@@ -1315,7 +1324,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
                 onPointerCancel={() => { pointerRef.current = null; setGesture(null); }}
               />
             ) : (
-              <div className={`py-16 text-center text-sm ${muted}`}>点击“读取界面”后，可直接在设备画面上点击或拖拽录制。</div>
+              <div className={`py-16 text-center text-sm ${muted}`}>点击“读取界面”后，可直接在设备画面上点击、长按或拖拽录制。</div>
             )}
           </div>
 
@@ -1357,10 +1366,14 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
                 <div className={`text-[11px] mt-1 ${muted}`}>{selectedNode?.bounds || '-'}</div>
               </>
             )}
-            <div className="mt-4 grid grid-cols-3 gap-2">
+            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
               <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('tap')} className={recorderButtonClass(isDark)}>
                 <Smartphone size={13} />
                 点击
+              </button>
+              <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('longPress', { durationMs: recorder.longPress.durationMs })} className={recorderButtonClass(isDark)}>
+                <Smartphone size={13} />
+                长按
               </button>
               <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('waitText', { timeoutMs: recorder.timeoutMs })} className={recorderButtonClass(isDark)}>
                 <Clock3 size={13} />
@@ -1424,6 +1437,13 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
               <button disabled={recorder.recording} onClick={() => onRecord('swipe', recorder.swipe)} className={`${recorderButtonClass(isDark, true)} lg:col-span-5`}>
                 <Smartphone size={13} />
                 按手动坐标滑动并记录
+              </button>
+              <NumberField label="长按X" value={recorder.longPress.x} onChange={(value) => onChange({ longPress: { ...recorder.longPress, x: value } })} isDark={isDark} />
+              <NumberField label="长按Y" value={recorder.longPress.y} onChange={(value) => onChange({ longPress: { ...recorder.longPress, y: value } })} isDark={isDark} />
+              <NumberField label="长按时长(ms)" value={recorder.longPress.durationMs} onChange={(value) => onChange({ longPress: { ...recorder.longPress, durationMs: value } })} isDark={isDark} />
+              <button disabled={recorder.recording || recorder.longPress.x === '' || recorder.longPress.y === ''} onClick={() => onRecord('longPress', recorder.longPress)} className={`${recorderButtonClass(isDark, true)} lg:col-span-2`}>
+                <Smartphone size={13} />
+                按手动坐标长按并记录
               </button>
             </div>
           </details>
@@ -1782,7 +1802,7 @@ function renderStepFields(step, onChange, isDark) {
       </>
     );
   }
-  if (step.type === 'tap') {
+  if (step.type === 'tap' || step.type === 'longPress') {
     return (
       <>
         <TextField label="文本选择器" value={step.text} onChange={(value) => onChange({ text: value })} placeholder="例如：登录" isDark={isDark} />
@@ -1792,6 +1812,7 @@ function renderStepFields(step, onChange, isDark) {
         <TextField label="XPath-like 路径" value={step.xpath} onChange={(value) => onChange({ xpath: value })} placeholder="录制后自动生成，可手动调整" isDark={isDark} />
         <NumberField label="X坐标（可选）" value={step.x ?? ''} onChange={(value) => onChange({ x: value })} isDark={isDark} />
         <NumberField label="Y坐标（可选）" value={step.y ?? ''} onChange={(value) => onChange({ y: value })} isDark={isDark} />
+        {step.type === 'longPress' && <NumberField label="长按时长(ms)" value={step.durationMs} onChange={(value) => onChange({ durationMs: value })} isDark={isDark} />}
       </>
     );
   }
@@ -2155,6 +2176,7 @@ function getStepSummary(step) {
   if (step.type === 'imageCompare') return { title: step.label || '截图比对', detail: `${step.baselinePath || '未设置基准图'}，阈值 ${step.threshold || 98}%`, icon: Camera };
   if (step.type === 'perfSnapshot') return { title: step.label || '采集性能快照', detail: '记录 CPU、内存、温度和存储空间', icon: Gauge };
   if (step.type === 'tap') return { title: step.label || `点击 ${target}`, detail: target, icon: Smartphone };
+  if (step.type === 'longPress') return { title: step.label || `长按 ${target}`, detail: `${target}，${step.durationMs || 800}ms`, icon: Smartphone };
   if (step.type === 'swipe') return { title: step.label || '滑动屏幕', detail: getSwipeSummary(step), icon: Smartphone };
   if (step.type === 'input') return { title: step.label || '输入文本', detail: step.text || '未填写输入文本', icon: Terminal };
   if (step.type === 'keyevent') return { title: step.label || '发送按键', detail: `KeyCode ${step.keyCode || '-'}`, icon: Terminal };
@@ -2187,7 +2209,7 @@ function getSwipeSummary(step) {
 }
 
 function isSimpleEditableStep(step) {
-  return ['shell', 'screenshot', 'imageCompare', 'perfSnapshot', 'tap', 'swipe', 'input', 'waitText', 'assertText', 'delay', 'externalScript'].includes(step.type);
+  return ['shell', 'screenshot', 'imageCompare', 'perfSnapshot', 'tap', 'longPress', 'swipe', 'input', 'waitText', 'assertText', 'delay', 'externalScript'].includes(step.type);
 }
 
 function extractMonkeyPackage(command) {
@@ -2231,6 +2253,11 @@ function createRecorderState() {
       endY: '',
       durationMs: 300,
       points: []
+    },
+    longPress: {
+      x: '',
+      y: '',
+      durationMs: 800
     }
   };
 }
@@ -2270,7 +2297,7 @@ function createStep(type) {
     includeAiSummary: true,
     timeoutMs: type === 'waitLog' ? 60000 : 30000,
     intervalMs: 2000,
-    durationMs: 1000,
+    durationMs: type === 'longPress' ? 800 : 1000,
     continueOnError: false
   };
 }
