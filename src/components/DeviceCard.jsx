@@ -21,6 +21,7 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
   const terminalOutputRef = useRef(null);
   const [terminalCommand, setTerminalCommand] = useState('');
   const [terminalOutput, setTerminalOutput] = useState([]);
+  const [panelOrder, setPanelOrder] = useState([]);
   const [isExecuting, setIsExecuting] = useState(false);
   // SU 提权模式：开启后命令以 root 身份执行
   const [suMode, setSuMode] = useState(false);
@@ -38,6 +39,24 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
   const commandHistory = sharedCommandHistory || [];
   // 旧 APK 区块仅作为临时回退源码保留，默认不渲染。
   const showLegacyApkManager = Boolean(globalThis.__XBH_LEGACY_APK_MANAGER__);
+
+  useEffect(() => {
+    setPanelOrder(prev => {
+      const next = prev.filter(panel => {
+        if (panel === 'apk') return showApkManager;
+        if (panel === 'terminal') return showTerminal;
+        return false;
+      });
+      if (showApkManager && !next.includes('apk')) next.push('apk');
+      if (showTerminal && !next.includes('terminal')) next.push('terminal');
+      return next.length === prev.length && next.every((panel, index) => panel === prev[index]) ? prev : next;
+    });
+  }, [showApkManager, showTerminal]);
+
+  const getPanelOrder = (panel) => {
+    const index = panelOrder.indexOf(panel);
+    return index === -1 ? 20 : 10 + index;
+  };
 
   const handleNameSubmit = () => {
     onNameChange(device.id, editName.trim());
@@ -100,21 +119,27 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
       if (r1?.output?.includes(MARK)) {
         return { supported: true, strategy: 'su-c' };
       }
-    } catch {}
+    } catch {
+      // Ignore unsupported su -c form and try the next strategy.
+    }
     // 2. 兼容 busybox/toybox：su 不识别 -c，改用 su 0 sh -c
     try {
       const r2 = await window.electronAPI.adbShell(device.id, `su 0 sh -c 'echo ${MARK}'`);
       if (r2?.output?.includes(MARK)) {
         return { supported: true, strategy: 'su-sh' };
       }
-    } catch {}
+    } catch {
+      // Ignore unsupported su shell form and try direct root detection.
+    }
     // 3. 兜底：adb root 已生效（id 直接是 root），无需 su 包装
     try {
       const idRes = await window.electronAPI.adbShell(device.id, 'id');
       if (/uid=0/.test(idRes?.output || '')) {
         return { supported: true, strategy: 'direct' };
       }
-    } catch {}
+    } catch {
+      // Ignore id check failures and report unsupported below.
+    }
     return { supported: false, strategy: 'none' };
   };
 
@@ -142,7 +167,7 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
       if (window.electronAPI?.adbShellCancel) {
         await window.electronAPI.adbShellCancel(device.id);
       }
-    } catch (e) {
+    } catch {
       // 主进程回调会自动 resolve 执行中的 Promise，忽略中断请求异常
     }
   };
@@ -233,7 +258,7 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
   const t = theme || themes.default;
 
   return (
-    <div className={`${t.card} rounded-xl border shadow-sm overflow-hidden hover:shadow-md transition-shadow`}>
+    <div className={`${t.card} rounded-xl border shadow-sm overflow-hidden hover:shadow-md transition-shadow flex flex-col`}>
       <div className={`p-5 border-b flex justify-between items-start ${t.header.replace('border-b', 'border-b')}`}>
         <div className="flex items-center space-x-4">
           <div className={`w-12 h-12 rounded-full flex items-center justify-center ${isOnline ? `${t.primary === 'cyan' || t.primary === 'blue' ? 'bg-blue-100 text-blue-600' : t.primary === 'pink' ? 'bg-pink-100 text-pink-600' : t.primary === 'green' ? 'bg-green-100 text-green-600' : t.primary === 'orange' ? 'bg-orange-100 text-orange-600' : 'bg-emerald-100 text-emerald-600'}` : 'bg-slate-100 text-slate-400'}`}>
@@ -420,33 +445,35 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
 
       {/* App 包管理增强：使用独立面板承载安装、推送、文件浏览、应用列表与会员操作 */}
       {showApkManager && (
-        <PackageManagerPanel
-          device={device}
-          theme={t}
-          vipStatus={vipStatus}
-          showToast={showToast}
-          onOpenMemberCenter={onOpenMemberCenter}
-          onSelectApkForInstall={onSelectApkForInstall}
-          onSelectApkForPush={onSelectApkForPush}
-          onInstallApk={onInstallApk}
-          onPushApk={onPushApk}
-          onBrowsePath={onBrowsePath}
-          onPullFile={onPullFile}
-          onPushPathChange={onPushPathChange}
-          apkInstallPath={apkInstallPath}
-          apkPushPath={apkPushPath}
-          apkPushRemotePath={apkPushRemotePath}
-          pushRemotePathHistory={pushRemotePathHistory}
-          apkBrowserPath={apkBrowserPath}
-          apkBrowserItems={apkBrowserItems}
-          apkBrowserLoading={apkBrowserLoading}
-          operationLoading={operationLoading}
-        />
+        <div style={{ order: getPanelOrder('apk') }}>
+          <PackageManagerPanel
+            device={device}
+            theme={t}
+            vipStatus={vipStatus}
+            showToast={showToast}
+            onOpenMemberCenter={onOpenMemberCenter}
+            onSelectApkForInstall={onSelectApkForInstall}
+            onSelectApkForPush={onSelectApkForPush}
+            onInstallApk={onInstallApk}
+            onPushApk={onPushApk}
+            onBrowsePath={onBrowsePath}
+            onPullFile={onPullFile}
+            onPushPathChange={onPushPathChange}
+            apkInstallPath={apkInstallPath}
+            apkPushPath={apkPushPath}
+            apkPushRemotePath={apkPushRemotePath}
+            pushRemotePathHistory={pushRemotePathHistory}
+            apkBrowserPath={apkBrowserPath}
+            apkBrowserItems={apkBrowserItems}
+            apkBrowserLoading={apkBrowserLoading}
+            operationLoading={operationLoading}
+          />
+        </div>
       )}
 
       {/* APK Manager Section */}
       {showLegacyApkManager && showApkManager && (
-        <div className={`border-t p-4 ${t.primary === 'tech' ? 'bg-slate-800/30' : 'bg-slate-50'}`}>
+        <div style={{ order: getPanelOrder('apk') }} className={`border-t p-4 ${t.primary === 'tech' ? 'bg-slate-800/30' : 'bg-slate-50'}`}>
           <h4 className={`text-sm font-semibold mb-3 flex items-center gap-2 ${t.text}`}>
             <Package size={16} />
             APK 管理
@@ -667,7 +694,7 @@ function DeviceCard({ device, deviceName, onNameChange, onStart, onCommand, onSc
       {/* Terminal Section */}
       {showTerminal && (
         // 放大模式：fixed 全屏覆盖；普通模式：原位置 border-t
-        <div className={`${terminalFullscreen ? 'fixed inset-0 z-50 p-6 flex flex-col' : `border-t p-4`} ${t.terminal.bg}`}>
+        <div style={{ order: getPanelOrder('terminal') }} className={`${terminalFullscreen ? 'fixed inset-0 z-50 p-6 flex flex-col' : `border-t p-4`} ${t.terminal.bg}`}>
           <div className={`flex items-center justify-between mb-3 ${t.terminal.accent} ${terminalFullscreen ? 'pb-3 border-b border-[#3E4145]' : ''}`}>
             <div className="flex items-center gap-2">
               <Terminal size={16} />

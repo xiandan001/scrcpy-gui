@@ -2,6 +2,14 @@
 // 格式：{ title, date, items: [{ type: 'feature'|'fix'|'improve', text }] }
 // type 对应不同颜色标签：feature(绿色新增) fix(红色修复) improve(蓝色优化)
 const CHANGELOGS = {
+  '3.8.5': {
+    title: 'v3.8.5',
+    date: '2026-07-02',
+    items: [
+      { type: 'improve', text: '优化自动化压测录制回放：设备画面点击、长按和刷新状态响应更及时' },
+      { type: 'improve', text: '终端与 APK 管理同时打开时，会按照打开顺序排列' }
+    ]
+  },
   '3.8.4': {
     title: 'v3.8.4',
     date: '2026-07-02',

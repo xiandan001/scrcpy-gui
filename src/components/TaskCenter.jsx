@@ -50,6 +50,8 @@ const STEP_TYPES = [
 ];
 
 const LONG_PRESS_RECORD_THRESHOLD_MS = 600;
+const RECORD_ACTIONS_REFRESH_SNAPSHOT = new Set(['tap', 'longPress', 'swipe', 'input', 'keyevent']);
+const RECORDER_BACKGROUND_REFRESH_DELAY_MS = 300;
 
 const QUICK_TEMPLATES = [
   {
@@ -126,11 +128,31 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
   const [editorMode, setEditorMode] = useState('simple');
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
+  const recorderMountedRef = useRef(true);
+  const recorderRefreshTimerRef = useRef(null);
+  const recorderActionInFlightRef = useRef(false);
+  const recorderBackgroundRefreshInFlightRef = useRef(false);
 
   const panelClass = isDark ? 'bg-slate-800/80 border-[#3E4145]' : 'bg-white border-slate-200';
   const softClass = isDark ? 'bg-[#2D2F33] border-[#3E4145]' : 'bg-slate-50 border-slate-200';
   const muted = isDark ? 'text-[#9AA0A6]' : 'text-slate-500';
   const text = isDark ? 'text-[#E8EAED]' : 'text-slate-800';
+
+  const clearScheduledRecorderRefresh = ({ clearVisual = false } = {}) => {
+    if (!recorderRefreshTimerRef.current) return;
+    clearTimeout(recorderRefreshTimerRef.current);
+    recorderRefreshTimerRef.current = null;
+    if (clearVisual && !recorderBackgroundRefreshInFlightRef.current && recorderMountedRef.current) {
+      setRecorder(prev => prev.backgroundLoading ? { ...prev, backgroundLoading: false } : prev);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      recorderMountedRef.current = false;
+      clearScheduledRecorderRefresh();
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -212,12 +234,24 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
 
   useEffect(() => {
     if (onlineDevices.length === 0) {
-      setRecorder(prev => prev.deviceId ? { ...prev, deviceId: '' } : prev);
+      clearScheduledRecorderRefresh();
+      setRecorder(prev => prev.deviceId ? { ...prev, deviceId: '', loading: false, recording: false, backgroundLoading: false } : prev);
       return;
     }
     const preferred = selectedDeviceIds[0] || onlineDevices[0].id;
-    setRecorder(prev => onlineDevices.some(device => device.id === prev.deviceId) ? prev : { ...prev, deviceId: preferred });
+    setRecorder(prev => onlineDevices.some(device => device.id === prev.deviceId) ? prev : {
+      ...prev,
+      deviceId: preferred,
+      loading: false,
+      recording: false,
+      backgroundLoading: false
+    });
   }, [onlineDevices, selectedDeviceIds]);
+
+  const updateRecorder = (patch) => {
+    if (Object.prototype.hasOwnProperty.call(patch, 'deviceId')) clearScheduledRecorderRefresh();
+    setRecorder(prev => ({ ...prev, ...patch }));
+  };
 
   const selectScript = (script) => {
     setSelectedScriptId(script.id);
@@ -353,34 +387,73 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
     }
   };
 
-  const refreshRecorderSnapshot = async () => {
-    if (!recorder.deviceId) {
+  const refreshRecorderSnapshot = async ({ deviceId = recorder.deviceId, silent = false, background = false } = {}) => {
+    if (!deviceId) {
       showToast?.('请选择录制设备');
-      return;
+      return false;
     }
-    setRecorder(prev => ({ ...prev, loading: true, error: '' }));
+    if (!background) clearScheduledRecorderRefresh({ clearVisual: true });
+    setRecorder(prev => prev.deviceId === deviceId ? {
+      ...prev,
+      ...(background ? { backgroundLoading: true } : { loading: true, error: '' })
+    } : prev);
     try {
-      const res = await window.electronAPI?.taskStressUiSnapshot?.({ deviceId: recorder.deviceId });
+      const res = await window.electronAPI?.taskStressUiSnapshot?.({ deviceId });
+      if (!recorderMountedRef.current) return false;
       if (res?.ok) {
-        setRecorder(prev => ({
+        setRecorder(prev => prev.deviceId === deviceId ? ({
           ...prev,
           nodes: res.nodes || [],
           selectedNodeIndex: '',
-          screenshotDataUrl: res.screenshotDataUrl || '',
-          screenshotWidth: res.screenshotWidth || 0,
-          screenshotHeight: res.screenshotHeight || 0,
-          loading: false,
-          error: res.error || res.screenshotError || ''
-        }));
-        showToast?.(`已读取 ${res.nodes?.length || 0} 个界面控件`);
+          screenshotDataUrl: res.screenshotDataUrl || prev.screenshotDataUrl,
+          screenshotWidth: res.screenshotWidth || prev.screenshotWidth,
+          screenshotHeight: res.screenshotHeight || prev.screenshotHeight,
+          ...(background ? { backgroundLoading: false } : { loading: false }),
+          error: background ? prev.error : (res.error || res.screenshotError || '')
+        }) : prev);
+        if (!silent) showToast?.(`已读取 ${res.nodes?.length || 0} 个界面控件`);
+        return true;
       } else {
-        setRecorder(prev => ({ ...prev, loading: false, error: res?.error || '未知错误' }));
-        showToast?.(`读取界面失败：${res?.error || '未知错误'}`);
+        const message = res?.error || '未知错误';
+        setRecorder(prev => prev.deviceId === deviceId ? {
+          ...prev,
+          ...(background ? { backgroundLoading: false } : { loading: false, error: message })
+        } : prev);
+        if (!silent) showToast?.(`读取界面失败：${message}`);
+        return false;
       }
     } catch (error) {
-      setRecorder(prev => ({ ...prev, loading: false, error: error.message || '未知错误' }));
-      showToast?.(`读取界面失败：${error.message || '未知错误'}`);
+      if (!recorderMountedRef.current) return false;
+      const message = error.message || '未知错误';
+      setRecorder(prev => prev.deviceId === deviceId ? {
+        ...prev,
+        ...(background ? { backgroundLoading: false } : { loading: false, error: message })
+      } : prev);
+      if (!silent) showToast?.(`读取界面失败：${message}`);
+      return false;
     }
+  };
+
+  const scheduleRecorderSnapshotRefresh = (deviceId) => {
+    if (!deviceId || !recorderMountedRef.current) return;
+    clearScheduledRecorderRefresh();
+    setRecorder(prev => prev.deviceId === deviceId ? { ...prev, backgroundLoading: true } : prev);
+    recorderRefreshTimerRef.current = setTimeout(async () => {
+      recorderRefreshTimerRef.current = null;
+      if (!recorderMountedRef.current) return;
+      if (recorderActionInFlightRef.current || recorderBackgroundRefreshInFlightRef.current) {
+        scheduleRecorderSnapshotRefresh(deviceId);
+        return;
+      }
+      recorderBackgroundRefreshInFlightRef.current = true;
+      let refreshed = false;
+      try {
+        refreshed = await refreshRecorderSnapshot({ deviceId, silent: true, background: true });
+      } finally {
+        recorderBackgroundRefreshInFlightRef.current = false;
+      }
+      if (refreshed && recorderMountedRef.current) showToast?.('设备画面已刷新');
+    }, RECORDER_BACKGROUND_REFRESH_DELAY_MS);
   };
 
   const appendRecordedStep = (step) => {
@@ -396,27 +469,39 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
       showToast?.('请选择录制设备');
       return;
     }
+    if (recorder.loading || recorder.recording || recorder.backgroundLoading) return;
+    clearScheduledRecorderRefresh({ clearVisual: true });
+    const deviceId = recorder.deviceId;
     const selectedNode = recorder.nodes.find(item => String(item.index) === String(recorder.selectedNodeIndex));
     const node = Object.prototype.hasOwnProperty.call(extra, 'node') ? extra.node : selectedNode;
+    let shouldRefreshSnapshot = false;
+    recorderActionInFlightRef.current = true;
     setRecorder(prev => ({ ...prev, recording: true, error: '' }));
     try {
       const res = await window.electronAPI?.taskStressRecordAction?.({
-        deviceId: recorder.deviceId,
+        deviceId,
         action,
         node,
         ...extra
       });
       if (res?.ok && res.step) {
         appendRecordedStep(res.step);
-        showToast?.('已执行并记录步骤');
+        if (RECORD_ACTIONS_REFRESH_SNAPSHOT.has(action)) {
+          shouldRefreshSnapshot = true;
+          showToast?.('已执行并记录步骤，设备画面将在空闲时刷新');
+        } else {
+          showToast?.('已执行并记录步骤');
+        }
       } else {
         showToast?.(`录制失败：${res?.error || '未知错误'}`);
       }
     } catch (error) {
       showToast?.(`录制失败：${error.message || '未知错误'}`);
     } finally {
-      setRecorder(prev => ({ ...prev, recording: false }));
+      recorderActionInFlightRef.current = false;
+      if (recorderMountedRef.current) setRecorder(prev => ({ ...prev, recording: false }));
     }
+    if (shouldRefreshSnapshot) scheduleRecorderSnapshotRefresh(deviceId);
   };
 
   const clearRecordedSteps = () => {
@@ -651,7 +736,7 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
                 onClearDevices={() => setSelectedDeviceIds([])}
                 onRun={runScript}
                 onSave={saveScript}
-                onRecorderChange={(patch) => setRecorder(prev => ({ ...prev, ...patch }))}
+                onRecorderChange={updateRecorder}
                 onRecorderRefresh={refreshRecorderSnapshot}
                 onRecord={recordAction}
                 onClearSteps={clearRecordedSteps}
@@ -709,7 +794,7 @@ function TaskCenter({ devices, theme, taskCenterPath, showToast }) {
                       onlineDevices={onlineDevices}
                       isDark={isDark}
                       softClass={softClass}
-                      onChange={(patch) => setRecorder(prev => ({ ...prev, ...patch }))}
+                      onChange={updateRecorder}
                       onRefresh={refreshRecorderSnapshot}
                       onRecord={recordAction}
                       onClearSteps={clearRecordedSteps}
@@ -1167,6 +1252,9 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
   const [detachedOpen, setDetachedOpen] = useState(false);
   const [detachedViewportSize, setDetachedViewportSize] = useState({ width: 0, height: 0 });
   const hasScreenshot = Boolean(recorder.screenshotDataUrl && recorder.screenshotWidth && recorder.screenshotHeight);
+  const recorderBusy = recorder.loading || recorder.recording || recorder.backgroundLoading;
+  const recorderRefreshBusy = recorder.loading || recorder.backgroundLoading;
+  const recorderBusyLabel = recorder.recording ? '正在执行并记录操作...' : recorder.backgroundLoading ? '正在刷新设备画面...' : '正在读取设备画面...';
 
   useEffect(() => {
     if (!detachedOpen) return undefined;
@@ -1206,6 +1294,13 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
     };
   }, [detachedOpen]);
 
+  useEffect(() => {
+    if (!recorderBusy) return undefined;
+    pointerRef.current = null;
+    const frameId = requestAnimationFrame(() => setGesture(null));
+    return () => cancelAnimationFrame(frameId);
+  }, [recorderBusy]);
+
   const closeDetachedPreview = () => {
     pointerRef.current = null;
     setGesture(null);
@@ -1213,7 +1308,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
   };
 
   const handlePreviewPointerDown = (event, element) => {
-    if (!hasScreenshot || recorder.recording) return;
+    if (!hasScreenshot || recorderBusy) return;
     const point = getPreviewDevicePoint(event, element, recorder);
     if (!point) return;
     pointerRef.current = { ...point, pointerId: event.pointerId, startedAt: Date.now(), points: [point] };
@@ -1246,10 +1341,10 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
       if (node) onChange({ selectedNodeIndex: node.index });
       if (durationMs >= LONG_PRESS_RECORD_THRESHOLD_MS) {
         onChange({ longPress: { ...recorder.longPress, x: end.x, y: end.y, durationMs } });
-        onRecord('longPress', { node: node || null, x: end.x, y: end.y, durationMs });
+        onRecord('longPress', { node: null, x: end.x, y: end.y, durationMs });
         return;
       }
-      onRecord('tap', { node: node || null, x: end.x, y: end.y });
+      onRecord('tap', { node: null, x: end.x, y: end.y });
       return;
     }
     const durationMs = Math.max(80, Math.min(10000, Date.now() - start.startedAt || recorder.swipe.durationMs || 300));
@@ -1278,7 +1373,10 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
             recorder={recorder}
             previewRef={detachedPreviewRef}
             gesture={gesture}
-            className={`relative mx-auto overflow-hidden rounded-lg border touch-none select-none cursor-crosshair shadow-xl ${isDark ? 'border-[#3E4145] bg-black' : 'border-slate-200 bg-slate-100'}`}
+            busy={recorderBusy}
+            busyLabel={recorderBusyLabel}
+            isDark={isDark}
+            className={`relative mx-auto overflow-hidden rounded-lg border touch-none select-none shadow-xl ${recorderBusy ? 'cursor-wait' : 'cursor-crosshair'} ${isDark ? 'border-[#3E4145] bg-black' : 'border-slate-200 bg-slate-100'}`}
             style={getDetachedPreviewStyle(recorder, detachedViewportSize)}
             onPointerDown={(event) => handlePreviewPointerDown(event, detachedPreviewRef.current)}
             onPointerMove={(event) => handlePreviewPointerMove(event, detachedPreviewRef.current)}
@@ -1304,19 +1402,20 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
             return (
               <button
                 key={device.id}
+                disabled={recorderBusy}
                 onClick={() => {
                   closeDetachedPreview();
-                  onChange({ deviceId: device.id, nodes: [], selectedNodeIndex: '', screenshotDataUrl: '', screenshotWidth: 0, screenshotHeight: 0 });
+                  onChange({ deviceId: device.id, nodes: [], selectedNodeIndex: '', screenshotDataUrl: '', screenshotWidth: 0, screenshotHeight: 0, loading: false, recording: false, backgroundLoading: false, error: '' });
                 }}
-                className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 ${selected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}
+                className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50 ${selected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}
               >
                 <Smartphone size={13} />
                 <span className="max-w-[180px] truncate">{device.model || device.name || device.id}</span>
               </button>
             );
           })}
-          <button onClick={onRefresh} disabled={!recorder.deviceId || recorder.loading} className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 disabled:opacity-50 ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}>
-            <RefreshCw size={13} className={recorder.loading ? 'animate-spin' : ''} />
+          <button onClick={onRefresh} disabled={!recorder.deviceId || recorderBusy || recorder.backgroundLoading} className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-1.5 disabled:opacity-50 ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-white'}`}>
+            <RefreshCw size={13} className={recorderRefreshBusy ? 'animate-spin' : ''} />
             读取界面
           </button>
           <button onClick={onClearSteps} className="px-3 py-2 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 inline-flex items-center gap-1.5">
@@ -1338,6 +1437,12 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
             <div className="flex items-center gap-2">
               <span>设备画面</span>
               <span>{hasScreenshot ? `${recorder.screenshotWidth}x${recorder.screenshotHeight}` : '未读取'}</span>
+              {recorder.backgroundLoading && !recorder.loading && (
+                <span className="inline-flex items-center gap-1 text-emerald-500">
+                  <Loader2 size={12} className="animate-spin" />
+                  后台刷新中
+                </span>
+              )}
             </div>
             {hasScreenshot && (
               <button
@@ -1357,7 +1462,10 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
                 recorder={recorder}
                 previewRef={previewRef}
                 gesture={gesture}
-                className={`relative mx-auto max-h-[460px] max-w-full overflow-hidden rounded-lg border touch-none select-none cursor-crosshair ${isDark ? 'border-[#3E4145] bg-black' : 'border-slate-200 bg-slate-100'}`}
+                busy={recorderBusy}
+                busyLabel={recorderBusyLabel}
+                isDark={isDark}
+                className={`relative mx-auto max-h-[460px] max-w-full overflow-hidden rounded-lg border touch-none select-none ${recorderBusy ? 'cursor-wait' : 'cursor-crosshair'} ${isDark ? 'border-[#3E4145] bg-black' : 'border-slate-200 bg-slate-100'}`}
                 style={{ aspectRatio: `${recorder.screenshotWidth} / ${recorder.screenshotHeight}` }}
                 onPointerDown={(event) => handlePreviewPointerDown(event, previewRef.current)}
                 onPointerMove={(event) => handlePreviewPointerMove(event, previewRef.current)}
@@ -1365,7 +1473,14 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
                 onPointerCancel={() => { pointerRef.current = null; setGesture(null); }}
               />
             ) : (
-              <div className={`py-16 text-center text-sm ${muted}`}>点击“读取界面”后，可直接在设备画面上点击、长按或拖拽录制。</div>
+              <div className={`py-16 text-center text-sm ${muted}`}>
+                {recorder.loading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 size={16} className="animate-spin" />
+                    正在读取设备画面...
+                  </span>
+                ) : '点击“读取界面”后，可直接在设备画面上点击、长按或拖拽录制。'}
+              </div>
             )}
           </div>
 
@@ -1400,7 +1515,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
             <div className={`text-xs mb-2 ${muted}`}>选中控件</div>
             <div className={`text-base font-semibold break-words ${text}`}>{selectedNode?.label || '未选择控件'}</div>
             {simpleMode ? (
-              <div className={`text-xs mt-1 ${muted}`}>点击、等待和断言会自动保存控件信息；没有控件时使用坐标兜底。</div>
+              <div className={`text-xs mt-1 ${muted}`}>设备画面点击按坐标保存；等待和断言会保存控件信息。</div>
             ) : (
               <>
                 <div className={`text-xs mt-1 break-all ${muted}`}>{selectedNode?.resourceId || selectedNode?.contentDesc || selectedNode?.className || selectedNode?.xpath || '-'}</div>
@@ -1408,19 +1523,19 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
               </>
             )}
             <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('tap')} className={recorderButtonClass(isDark)}>
+              <button disabled={!selectedNode || recorderBusy} onClick={() => onRecord('tap')} className={recorderButtonClass(isDark)}>
                 <Smartphone size={13} />
                 点击
               </button>
-              <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('longPress', { durationMs: recorder.longPress.durationMs })} className={recorderButtonClass(isDark)}>
+              <button disabled={!selectedNode || recorderBusy} onClick={() => onRecord('longPress', { durationMs: recorder.longPress.durationMs })} className={recorderButtonClass(isDark)}>
                 <Smartphone size={13} />
                 长按
               </button>
-              <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('waitText', { timeoutMs: recorder.timeoutMs })} className={recorderButtonClass(isDark)}>
+              <button disabled={!selectedNode || recorderBusy} onClick={() => onRecord('waitText', { timeoutMs: recorder.timeoutMs })} className={recorderButtonClass(isDark)}>
                 <Clock3 size={13} />
                 等待
               </button>
-              <button disabled={!selectedNode || recorder.recording} onClick={() => onRecord('assertText', { timeoutMs: recorder.timeoutMs })} className={recorderButtonClass(isDark)}>
+              <button disabled={!selectedNode || recorderBusy} onClick={() => onRecord('assertText', { timeoutMs: recorder.timeoutMs })} className={recorderButtonClass(isDark)}>
                 <CheckCircle2 size={13} />
                 断言
               </button>
@@ -1430,7 +1545,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
           <div className={`grid gap-3 ${simpleMode ? 'lg:grid-cols-1' : 'lg:grid-cols-2'}`}>
             <div className={`rounded-lg border p-3 space-y-2 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
               <TextField label="输入文本" value={recorder.inputText} onChange={(value) => onChange({ inputText: value })} placeholder="输入到当前焦点" isDark={isDark} />
-              <button disabled={!recorder.inputText || recorder.recording} onClick={() => onRecord('input', { text: recorder.inputText })} className={recorderButtonClass(isDark, true)}>
+              <button disabled={!recorder.inputText || recorderBusy} onClick={() => onRecord('input', { text: recorder.inputText })} className={recorderButtonClass(isDark, true)}>
                 <Terminal size={13} />
                 输入并记录
               </button>
@@ -1439,7 +1554,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
             {!simpleMode && (
               <div className={`rounded-lg border p-3 space-y-2 ${isDark ? 'border-[#3E4145] bg-[#202124]' : 'border-slate-200 bg-white'}`}>
                 <TextField label="KeyCode" value={recorder.keyCode} onChange={(value) => onChange({ keyCode: value })} placeholder="例如：66" isDark={isDark} />
-                <button disabled={!recorder.keyCode || recorder.recording} onClick={() => onRecord('keyevent', { keyCode: recorder.keyCode })} className={recorderButtonClass(isDark, true)}>
+                <button disabled={!recorder.keyCode || recorderBusy} onClick={() => onRecord('keyevent', { keyCode: recorder.keyCode })} className={recorderButtonClass(isDark, true)}>
                   <Terminal size={13} />
                   按键并记录
                 </button>
@@ -1456,7 +1571,7 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
             <div className={`text-xs mt-1 ${muted}`}>在设备画面上点击会记录点击，拖拽会记录滑动；手动坐标只作为兜底。</div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button disabled={recorder.recording} onClick={() => onRecord('delay', { durationMs: recorder.delayMs })} className={recorderButtonClass(isDark)}>
+            <button disabled={recorderBusy} onClick={() => onRecord('delay', { durationMs: recorder.delayMs })} className={recorderButtonClass(isDark)}>
               <Clock3 size={13} />
               追加等待步骤
             </button>
@@ -1475,14 +1590,14 @@ function StressRecorder({ recorder, onlineDevices, isDark, softClass, simpleMode
               <NumberField label="终点X" value={recorder.swipe.endX} onChange={(value) => onChange({ swipe: { ...recorder.swipe, endX: value, points: [] } })} isDark={isDark} />
               <NumberField label="终点Y" value={recorder.swipe.endY} onChange={(value) => onChange({ swipe: { ...recorder.swipe, endY: value, points: [] } })} isDark={isDark} />
               <NumberField label="滑动时长(ms)" value={recorder.swipe.durationMs} onChange={(value) => onChange({ swipe: { ...recorder.swipe, durationMs: value, points: [] } })} isDark={isDark} />
-              <button disabled={recorder.recording} onClick={() => onRecord('swipe', recorder.swipe)} className={`${recorderButtonClass(isDark, true)} lg:col-span-5`}>
+              <button disabled={recorderBusy} onClick={() => onRecord('swipe', recorder.swipe)} className={`${recorderButtonClass(isDark, true)} lg:col-span-5`}>
                 <Smartphone size={13} />
                 按手动坐标滑动并记录
               </button>
               <NumberField label="长按X" value={recorder.longPress.x} onChange={(value) => onChange({ longPress: { ...recorder.longPress, x: value } })} isDark={isDark} />
               <NumberField label="长按Y" value={recorder.longPress.y} onChange={(value) => onChange({ longPress: { ...recorder.longPress, y: value } })} isDark={isDark} />
               <NumberField label="长按时长(ms)" value={recorder.longPress.durationMs} onChange={(value) => onChange({ longPress: { ...recorder.longPress, durationMs: value } })} isDark={isDark} />
-              <button disabled={recorder.recording || recorder.longPress.x === '' || recorder.longPress.y === ''} onClick={() => onRecord('longPress', recorder.longPress)} className={`${recorderButtonClass(isDark, true)} lg:col-span-2`}>
+              <button disabled={recorderBusy || recorder.longPress.x === '' || recorder.longPress.y === ''} onClick={() => onRecord('longPress', recorder.longPress)} className={`${recorderButtonClass(isDark, true)} lg:col-span-2`}>
                 <Smartphone size={13} />
                 按手动坐标长按并记录
               </button>
@@ -1499,19 +1614,20 @@ function recorderButtonClass(isDark, full = false) {
   return `${full ? 'w-full ' : ''}inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-xs disabled:opacity-50 disabled:cursor-not-allowed ${isDark ? 'border-[#5F6368] text-[#E8EAED] hover:bg-[#3E4145]' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`;
 }
 
-function RecorderPreviewSurface({ recorder, previewRef, gesture, className, style, onPointerDown, onPointerMove, onPointerUp, onPointerCancel }) {
+function RecorderPreviewSurface({ recorder, previewRef, gesture, busy = false, busyLabel = '正在读取设备画面...', isDark = false, className, style, onPointerDown, onPointerMove, onPointerUp, onPointerCancel }) {
   return (
     <div
       ref={previewRef}
       role="button"
       tabIndex={0}
+      aria-busy={busy}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       className={className}
       style={style}
-      title="点击记录点击动作，拖拽记录滑动动作"
+      title="点击记录点击动作，长按记录长按动作，拖拽记录滑动动作"
     >
       <img
         src={recorder.screenshotDataUrl}
@@ -1535,6 +1651,14 @@ function RecorderPreviewSurface({ recorder, previewRef, gesture, className, styl
           </svg>
         )}
       </div>
+      {busy && (
+        <div className={`absolute inset-0 z-20 flex items-center justify-center ${isDark ? 'bg-black/55 text-[#E8EAED]' : 'bg-white/75 text-slate-700'} backdrop-blur-[1px]`}>
+          <div className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm shadow-sm ${isDark ? 'border-[#3E4145] bg-[#202124]/95' : 'border-slate-200 bg-white/95'}`}>
+            <Loader2 size={16} className="animate-spin text-emerald-500" />
+            <span>{busyLabel}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2279,6 +2403,7 @@ function createRecorderState() {
     selectedNodeIndex: '',
     loading: false,
     recording: false,
+    backgroundLoading: false,
     error: '',
     screenshotDataUrl: '',
     screenshotWidth: 0,

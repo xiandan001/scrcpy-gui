@@ -1156,6 +1156,7 @@ function compactObject(value) {
 }
 
 async function waitForUiNode(task, deviceId, step, timeoutMs) {
+  if (!hasSelector(normalizeSelector(step))) return null;
   const deadline = Date.now() + Math.max(1000, Math.min(Number(timeoutMs) || DEFAULT_TIMEOUT_MS, 300000));
   const intervalMs = Math.max(500, Math.min(Number(step.intervalMs) || 1000, 10000));
   while (Date.now() <= deadline) {
@@ -1168,6 +1169,7 @@ async function waitForUiNode(task, deviceId, step, timeoutMs) {
 }
 
 async function findUiPoint(task, deviceId, step, timeoutMs) {
+  if (!hasSelector(normalizeSelector(step))) return null;
   const node = await waitForUiNode(task, deviceId, step, timeoutMs);
   return node ? getNodeCenter(node) : null;
 }
