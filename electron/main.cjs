@@ -28,6 +28,7 @@ const performanceMonitor = require('./lib/performance-monitor.cjs');
 const taskCenter = require('./lib/task-center.cjs');
 const artifactCenter = require('./lib/artifact-center.cjs');
 const environmentCheck = require('./lib/environment-check.cjs');
+const { cleanupAndroidToolProcesses } = require('./lib/android-tool-cleanup.cjs');
 
 // 单实例锁定 - 确保只有一个应用实例在运行
 const gotTheLock = app.requestSingleInstanceLock();
@@ -121,7 +122,10 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', async (event) => {
+let quitCleanupRunning = false;
+let quitCleanupFinished = false;
+
+function cleanupRuntimeResources() {
   // 清理 AI 相关资源
   aiAnalyze.resetAiState();
   mcp.closeMcpServer();
@@ -136,12 +140,43 @@ app.on('before-quit', async (event) => {
   taskCenter.cleanup();
   // 终止终端中未结束的 shell 命令（如挂起的 su）
   adb.stopAllShellProcs();
+}
+
+async function cleanupBeforeQuit({ forUpdateInstall = false } = {}) {
+  cleanupRuntimeResources();
   // 停止所有录屏进程（如果有）
   if (adb.hasActiveScreenRecords()) {
-    event.preventDefault();
     await adb.stopAllScreenRecords();
-    app.quit();
   }
+  if (forUpdateInstall) {
+    await updater.prepareForUpdateInstall();
+  } else {
+    await cleanupAndroidToolProcesses();
+  }
+}
+
+app.on('before-quit', async (event) => {
+  if (quitCleanupFinished || updater.isQuitAndInstallInProgress()) return;
+  event.preventDefault();
+  if (quitCleanupRunning) return;
+
+  quitCleanupRunning = true;
+  const shouldInstallUpdate = updater.shouldInstallDownloadedUpdateOnQuit();
+  try {
+    await cleanupBeforeQuit({ forUpdateInstall: shouldInstallUpdate });
+  } catch (err) {
+    console.warn('[App] before-quit cleanup failed:', err);
+  } finally {
+    quitCleanupFinished = true;
+    quitCleanupRunning = false;
+  }
+
+  if (shouldInstallUpdate) {
+    const started = updater.quitAndInstallPreparedUpdate();
+    if (!started) app.quit();
+    return;
+  }
+  app.quit();
 });
 
 app.on('window-all-closed', () => {

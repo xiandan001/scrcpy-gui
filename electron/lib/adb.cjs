@@ -478,6 +478,7 @@ function register(ipcMain) {
 
 module.exports = {
   register,
+  stopAllShellProcs,
   stopAllScreenRecords,
   hasActiveScreenRecords,
 };

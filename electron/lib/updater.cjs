@@ -3,10 +3,12 @@
 //
 // 该模块管理 updaterStatus 状态缓存，并通过 sendUpdaterEvent 将事件转发到渲染进程
 
+const { app } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const ctx = require('./app-context.cjs');
 const { isDev } = ctx;
 const { getAppVersion, compareVersions } = require('./version.cjs');
+const { cleanupAndroidToolProcesses } = require('./android-tool-cleanup.cjs');
 
 const UPDATER_MAX_RETRIES = 2;
 const UPDATER_RETRY_DELAYS_MS = [2000, 5000];
@@ -35,6 +37,8 @@ let updaterStatus = {
   error: null,
   info: null             // { version, releaseNotes, releaseName }
 };
+let quitAndInstallInProgress = false;
+let updateInstallPrepared = false;
 
 // 自动更新事件转发到渲染进程（同时发送到主窗口 + Log Analyzer 窗口）
 function sendUpdaterEvent(eventName, payload) {
@@ -158,6 +162,31 @@ async function runUpdaterTaskWithRetry(action, task) {
   throw lastError;
 }
 
+async function prepareForUpdateInstall() {
+  if (updateInstallPrepared) return;
+  await cleanupAndroidToolProcesses({
+    includeScrcpy: true,
+    includeFastboot: true
+  });
+  updateInstallPrepared = true;
+}
+
+function shouldInstallDownloadedUpdateOnQuit() {
+  return updaterStatus.downloaded && !quitAndInstallInProgress;
+}
+
+function isQuitAndInstallInProgress() {
+  return quitAndInstallInProgress;
+}
+
+function quitAndInstallPreparedUpdate() {
+  if (!updaterStatus.downloaded) return false;
+  quitAndInstallInProgress = true;
+  updateInstallPrepared = true;
+  autoUpdater.quitAndInstall();
+  return true;
+}
+
 // 绑定 autoUpdater 事件（在模块加载时绑定一次，与原 main.cjs 行为一致）
 function setupAutoUpdater() {
   autoUpdater.on('checking-for-update', () => {
@@ -268,7 +297,7 @@ function register(ipcMain) {
   // 安装更新（退出应用并安装）
   ipcMain.handle('updater:install', async () => {
     if (updaterStatus.downloaded) {
-      autoUpdater.quitAndInstall();
+      app.quit();
       return { success: true };
     }
     return { success: false, error: '更新尚未下载完成' };
@@ -280,4 +309,10 @@ function register(ipcMain) {
   });
 }
 
-module.exports = { register };
+module.exports = {
+  register,
+  prepareForUpdateInstall,
+  shouldInstallDownloadedUpdateOnQuit,
+  isQuitAndInstallInProgress,
+  quitAndInstallPreparedUpdate
+};
